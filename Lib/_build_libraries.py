@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from altium_monkey import (
-    AltiumPcbLib, AltiumSchLib, PadShape, PcbBodyProjection, PcbLayer,
+    AltiumPcbLib, AltiumSchLib, PadHoleShape, PadShape, PcbBodyProjection, PcbLayer,
     PinElectrical, Rotation90, SchFontSpec, SchPointMils, make_sch_pin,
 )
 
@@ -59,12 +59,14 @@ sch=AltiumSchLib(show_comments_designators=True)
 font=SchFontSpec(name='Arial',size=10)
 
 
-def circuit_symbol(name, prefix, footprint, desc, designator_xy, comment_xy):
+def circuit_symbol(name, prefix, footprint, desc, designator_xy, comment_xy,
+                   *, comment=None):
     """A schematic symbol drawn from its electrical function, without a box."""
     s = sch.add_symbol(name)
     s.set_description(desc)
     s.add_designator(prefix + '?', *designator_xy)
-    s.add_parameter('Comment', name, x=comment_xy[0], y=comment_xy[1])
+    s.add_parameter('Comment', comment or name,
+                    x=comment_xy[0], y=comment_xy[1])
     s.add_footprint(footprint, library_name='Oscill.PcbLib')
     return s
 
@@ -78,11 +80,12 @@ def circuit_pin(s, number, name, x, y, orientation):
         name_visible=False, name_font=font, designator_font=font))
 
 
-def functional_pin(s, number, name, x, y, orientation, *, show_name=True):
+def functional_pin(s, number, name, x, y, orientation, *, show_name=True,
+                   length=200):
     s.add_pin(make_sch_pin(
         designator=str(number), name=name,
         location_mils=SchPointMils.from_mils(x, y),
-        orientation=orientation, length_mils=200,
+        orientation=orientation, length_mils=length,
         electrical_type=PinElectrical.PASSIVE,
         name_visible=show_name, designator_visible=True,
         name_font=font, designator_font=font))
@@ -286,6 +289,144 @@ for row,(nc,common,no) in enumerate(((2,3,4),(7,6,5))):
 s.add_designator('K?',-650,850)
 s.add_parameter('Comment','HFD4_3-S',x=-650,y=-1100)
 s.add_footprint(f.name,library_name='Oscill.PcbLib')
+
+
+# YLPTEC A0503S-2WR3, 2 W isolated dual-output DC/DC converter.
+# S package: 19.5 x 7.0 x 10.0 mm; pins 1, 2, 4, 5, 6 on a 2.54 mm grid.
+f=fp('A0503S-2WR3_SIP5','YLPTEC A0503S-2WR3, SIP 19.5x7.0 mm',10.0)
+for n,x in [(1,-6.35),(2,-3.81),(4,1.27),(5,3.81),(6,6.35)]:
+    pad(f,n,x,0,1.6,1.6,0.9,
+        PadShape.RECTANGLE if n==1 else PadShape.CIRCLE)
+# The datasheet dimensioned view is a bottom view.  Altium displays the
+# footprint from the component side, so the body offset is mirrored in Y.
+# The pin row is 1.0 mm from the rear face; the printed face is 6.0 mm away.
+rect(f,-9.75,-6.0,9.75,1.0,PcbLayer.TOP_OVERLAY)
+rect(f,-10.25,-6.5,10.25,1.5,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-9.5,-6.25),(-9.0,-6.25))
+body(f,'A0503S-2WR3 case',-9.75,-6.0,9.75,1.0,10.0,0,0x202020)
+s=sch.add_symbol('A0503S-2WR3')
+s.set_description('YLPTEC 2 W isolated DC/DC, 5 V input, +/-3.3 V dual output')
+s.add_rectangle(-500,-400,500,400)
+functional_pin(s,1,'VIN',-500,200,Rotation90.DEG_180)
+functional_pin(s,2,'GND',-500,-200,Rotation90.DEG_180)
+functional_pin(s,6,'+VOUT',500,300,Rotation90.DEG_0)
+functional_pin(s,5,'0V',500,0,Rotation90.DEG_0)
+functional_pin(s,4,'-VOUT',500,-300,Rotation90.DEG_0)
+s.add_line(-100,250,-100,-250)
+s.add_line(100,250,100,-250)
+s.add_label('DC',-400,80)
+s.add_label('DC',250,80)
+s.add_designator('U?',-500,600)
+s.add_parameter('Comment','A0503S-2WR3',x=-500,y=-600)
+s.add_footprint(f.name,library_name='Oscill.PcbLib')
+
+
+# TDK ACH3218-223-TD01, vertical SMD three-terminal T filter.
+# Recommended land pattern: 1.4 / 2.2 / 1.4 mm in X, 1.94 mm in Y,
+# with a 0.6 mm central ground land.
+f=fp('ACH3218_3TERM_FILTER','TDK ACH3218 vertical SMD 3-terminal filter',2.5)
+pad(f,1,-1.8,0,1.4,1.94)
+pad(f,2,0,0,0.6,1.94)
+pad(f,3,1.8,0,1.4,1.94)
+track(f,(-1.5,1.15),(1.5,1.15))
+track(f,(-1.5,-1.15),(1.5,-1.15))
+rect(f,-2.75,-1.25,2.75,1.25,PcbLayer.MECHANICAL_15,0.05)
+body(f,'ACH3218 ferrite',-1.15,-0.9,1.15,0.9,2.5,0,0x303030)
+body(f,'ACH3218 terminal 1',-1.6,-0.9,-1.15,0.9,2.5,0,0xB0B0B0)
+body(f,'ACH3218 terminal 3',1.15,-0.9,1.6,0.9,2.5,0,0xB0B0B0)
+s=circuit_symbol('ACH3218-223-TD01','Z',f.name,
+ 'TDK 22 nF three-terminal T-type EMI filter, 20 V, 1.5 A',
+ (-450,300),(-300,-500))
+functional_pin(s,1,'LINE1',-450,0,Rotation90.DEG_180)
+functional_pin(s,3,'LINE3',450,0,Rotation90.DEG_0)
+functional_pin(s,2,'GND',0,-300,Rotation90.DEG_270)
+s.add_polyline([(-450,0),(-300,0),(-250,80),(-150,-80),
+                (-50,80),(0,0),(50,80),(150,-80),
+                (250,80),(300,0),(450,0)])
+s.add_line(0,0,0,-90)
+s.add_line(-90,-90,90,-90)
+s.add_line(-90,-150,90,-150)
+s.add_line(0,-150,0,-300)
+
+
+# Alps Alpine EC11E vertical encoder with one integrated push switch.
+# Mounting-side coordinates from EC11E drawing No. 2/3.
+f=fp('EC11E_ENCODER_SW','Alps Alpine EC11E vertical encoder with push switch',21.0)
+for n,x,y in [('A',-2.5,-7.5),('C',0,-7.5),('B',2.5,-7.5),
+              ('D',-2.5,7.0),('E',2.5,7.0)]:
+    pad(f,n,x,y,1.8,1.8,1.0,PadShape.CIRCLE)
+for x in (-6.25,6.25):
+    f.add_pad(designator='', position_mils=(mil(x),0),
+              width_mils=mil(2.5), height_mils=mil(3.6),
+              layer=PcbLayer.MULTI_LAYER, shape=PadShape.RECTANGLE,
+              hole_size_mils=mil(1.5), slot_length_mils=mil(2.6),
+              slot_rotation_degrees=90, hole_shape=PadHoleShape.SLOT,
+              plated=True)
+rect(f,-5.85,-6.0,5.85,6.0,PcbLayer.TOP_OVERLAY)
+rect(f,-7.75,-8.75,7.75,8.25,PcbLayer.MECHANICAL_15,0.05)
+f.add_arc(center_mils=(0,0),radius_mils=mil(3.0),start_angle_degrees=0,
+          end_angle_degrees=360,width_mils=mil(0.12),layer=PcbLayer.TOP_OVERLAY)
+body(f,'EC11E base',-5.85,-6.0,5.85,6.0,1.0,0,0x206040)
+body(f,'EC11E metal case',-5.5,-5.5,5.5,5.5,5.5,1.0,0xA0A0A0)
+round_body(f,'EC11E shaft hub',4.2,1.0,6.5,0x303030)
+round_body(f,'EC11E shaft',3.0,13.5,7.5,0xB0B0B0)
+s=circuit_symbol('EC11E_ENCODER_SW','ENC',f.name,
+ 'Alps Alpine EC11E vertical incremental encoder with one push-on switch',
+ (-250,400),(-250,-450),comment='EC11E')
+s.add_rectangle(-250,-300,250,300)
+functional_pin(s,'A','A',-250,200,Rotation90.DEG_180,length=100)
+functional_pin(s,'C','C',-250,0,Rotation90.DEG_180,length=100)
+functional_pin(s,'B','B',-250,-200,Rotation90.DEG_180,length=100)
+functional_pin(s,'D','D',250,150,Rotation90.DEG_0,length=100)
+functional_pin(s,'E','E',250,-150,Rotation90.DEG_0,length=100)
+s.add_label('ENC',-130,140)
+s.add_line(-120,40,80,40)
+s.add_line(80,40,80,-30)
+s.add_line(250,150,130,150)
+s.add_line(250,-150,130,-150)
+s.add_line(130,-150,170,90)
+s.add_label('SW',140,-10)
+
+
+# Custom raised tactile switch: an SMD button on a DIP-8-like carrier.
+# Pins 1-4 are one internally common contact; pins 5-8 are the other.
+f=fp('TACT_SMD_ON_DIP8_RAISED','Raised tactile switch on DIP-8 7.62 mm carrier',7.5)
+for n,y in [(1,3.81),(2,1.27),(3,-1.27),(4,-3.81)]:
+    pad(f,n,-3.81,y,1.7,1.7,0.9,
+        PadShape.RECTANGLE if n==1 else PadShape.CIRCLE)
+for n,y in [(8,3.81),(7,1.27),(6,-1.27),(5,-3.81)]:
+    pad(f,n,3.81,y,1.7,1.7,0.9,PadShape.CIRCLE)
+rect(f,-4.8,-5.1,4.8,5.1,PcbLayer.TOP_OVERLAY)
+rect(f,-5.35,-5.65,5.35,5.65,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-5.1,4.75),(-4.85,4.75))
+body(f,'DIP8 raised carrier',-4.8,-5.1,4.8,5.1,4.0,0,0x202020)
+body(f,'SMD tactile switch',-3.1,-3.1,3.1,3.1,3.0,4.0,0x404040)
+body(f,'Tact actuator',-1.6,-1.6,1.6,1.6,0.5,7.0,0x606060)
+s=circuit_symbol('TACT_SMD_ON_DIP8_RAISED','SB',f.name,
+ 'Custom raised NO tactile switch; pins 1-4 common, pins 5-8 common',
+ (-150,250),(-150,-300),comment='TACT_SMD')
+s.add_rectangle(-150,-150,150,150)
+for n in range(1,5):
+    s.add_pin(make_sch_pin(
+        designator=str(n), name='A',
+        location_mils=SchPointMils.from_mils(-150,0),
+        orientation=Rotation90.DEG_180, length_mils=100,
+        electrical_type=PinElectrical.PASSIVE,
+        name_visible=False, designator_visible=False,
+        name_font=font, designator_font=font))
+for n in range(5,9):
+    s.add_pin(make_sch_pin(
+        designator=str(n), name='B',
+        location_mils=SchPointMils.from_mils(150,0),
+        orientation=Rotation90.DEG_0, length_mils=100,
+        electrical_type=PinElectrical.PASSIVE,
+        name_visible=False, designator_visible=False,
+        name_font=font, designator_font=font))
+s.add_label('1-4',-130,60)
+s.add_label('5-8',30,60)
+s.add_line(-150,0,-50,0)
+s.add_line(150,0,50,0)
+s.add_line(-50,0,40,80)
 
 
 # Nexperia BAV99 in SOT23, reflow land pattern.
