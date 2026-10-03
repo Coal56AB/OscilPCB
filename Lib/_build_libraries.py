@@ -59,6 +59,12 @@ sch=AltiumSchLib(show_comments_designators=True)
 font=SchFontSpec(name='Arial',size=10)
 
 
+def link_footprint(symbol, footprint):
+    """Link a symbol to its footprint in the adjacent PCB library."""
+    model = symbol.add_footprint(footprint, library_name=footprint)
+    model.model_datafiles = [('Oscill.PcbLib', footprint, 'PCBLib')]
+
+
 def circuit_symbol(name, prefix, footprint, desc, designator_xy, comment_xy,
                    *, comment=None):
     """A schematic symbol drawn from its electrical function, without a box."""
@@ -67,7 +73,7 @@ def circuit_symbol(name, prefix, footprint, desc, designator_xy, comment_xy,
     s.add_designator(prefix + '?', *designator_xy)
     s.add_parameter('Comment', comment or name,
                     x=comment_xy[0], y=comment_xy[1])
-    s.add_footprint(footprint, library_name='Oscill.PcbLib')
+    link_footprint(s, footprint)
     return s
 
 
@@ -170,7 +176,7 @@ for row,n in enumerate(grounds):
                    Rotation90.DEG_180)
 s.add_designator('DA?',-500,1550)
 s.add_parameter('Comment','AD9288BSTZ-100',x=-500,y=-1550)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+link_footprint(s, f.name)
 
 
 # TI D package SOIC-8.
@@ -195,7 +201,7 @@ s.add_line(0,400,0,200)
 s.add_line(0,-400,0,-200)
 s.add_designator('DA?',-400,600)
 s.add_parameter('Comment','OPA356',x=-400,y=-800)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+link_footprint(s, f.name)
 
 
 # ADI ADA4940-1ARZ, R-8 narrow SOIC: 3.9 x 4.9 mm body, 1.27 mm pitch.
@@ -219,7 +225,67 @@ for n,name,y in [(4,'+OUT',300),(5,'-OUT',100),
     functional_pin(s,n,name,450,y,Rotation90.DEG_0)
 s.add_designator('DA?',-450,600)
 s.add_parameter('Comment','ADA4940-1ARZ',x=-450,y=-600)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+link_footprint(s, f.name)
+
+
+# ADI RD-8-4 narrow SOIC-8 with exposed pad, 1.27 mm lead pitch.
+f=fp('ADA4817-1ARDZ_SOIC8_EP','ADI RD-8-4 SOIC_N_EP, 1.27 mm pitch',1.75)
+for i in range(4):
+    y=1.905-i*1.27
+    pad(f,i+1,-2.65,y,1.5,0.6)
+    pad(f,8-i,2.65,y,1.5,0.6)
+pad(f,9,0,0,2.3,2.3)
+rect(f,-1.75,-2.4,1.75,2.4,PcbLayer.TOP_OVERLAY)
+rect(f,-3.7,-2.9,3.7,2.9,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-3.55,2.6),(-3.25,2.6))
+body(f,'ADA4817 exposed paddle',-1.145,-1.145,1.145,1.145,
+     0.05,0,0xC0A050)
+body(f,'ADA4817 SOIC-8 mould',-1.95,-2.45,1.95,2.45,
+     1.6,0.1)
+s=sch.add_symbol('ADA4817-1ARDZ')
+s.set_description('ADI ADA4817-1ARDZ FastFET op amp, RD-8-4 SOIC-8 with EP')
+s.add_rectangle(-500,-450,500,450)
+s.add_polyline([(-70,-140),(-70,140),(190,0),(-70,-140)])
+for n,name,y in [(2,'-IN',300),(3,'+IN',100),
+                 (8,'PD',-100),(9,'EPAD',-300)]:
+    functional_pin(s,n,name,-500,y,Rotation90.DEG_180)
+for n,name,y in [(7,'+VS',300),(6,'OUT',100),
+                 (1,'FB',-100),(4,'-VS',-300)]:
+    functional_pin(s,n,name,500,y,Rotation90.DEG_0)
+s.add_designator('DA?',-500,650)
+s.add_parameter('Comment','ADA4817-1ARDZ',x=-500,y=-650)
+link_footprint(s, f.name)
+
+
+# AMS1117 adjustable version, 3-lead SOT-223. Pin 2 and the tab are VOUT.
+# AMS drawing 042292: body 6.30-6.71 x 3.30-3.71 mm, 2.29 mm lead pitch,
+# 6.71-7.29 mm overall lead span, 1.80 mm maximum height.
+f=fp('AMS1117-ADJ_SOT223','AMS SOT-223, 2.29 mm lead pitch, tab is VOUT',1.8)
+for n,x in ((1,-2.29),(2,0),(3,2.29)):
+    pad(f,n,x,3.25,1.3,2.0)
+pad(f,2,0,-3.25,3.6,2.0)
+track(f,(-3.35,-1.85),(-1.9,-1.85))
+track(f,(1.9,-1.85),(3.35,-1.85))
+track(f,(-3.35,-1.85),(-3.35,1.85))
+track(f,(3.35,-1.85),(3.35,1.85))
+track(f,(-3.35,1.85),(3.35,1.85))
+rect(f,-3.85,-4.55,3.85,4.55,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-3.65,2.15),(-3.35,2.15))
+body(f,'AMS1117 tab VOUT',-1.525,-4.0,1.525,-1.4,0.3,0,0xC0A050)
+for n,x in ((1,-2.29),(2,0),(3,2.29)):
+    body(f,f'AMS1117 lead {n}',x-0.37,1.4,x+0.37,4.0,
+         0.3,0,0xC0A050)
+body(f,'AMS1117 SOT-223 mould',-3.25,-1.75,3.25,1.75,
+     1.5,0.3)
+s=sch.add_symbol('AMS1117-ADJ')
+s.set_description('AMS1117 adjustable voltage regulator, SOT-223; tab = VOUT')
+s.add_rectangle(-350,-250,350,250)
+functional_pin(s,3,'VIN',-350,0,Rotation90.DEG_180)
+functional_pin(s,2,'VOUT',350,0,Rotation90.DEG_0)
+functional_pin(s,1,'ADJ',0,-250,Rotation90.DEG_270)
+s.add_designator('DA?',-350,450)
+s.add_parameter('Comment','AMS1117-ADJ',x=-350,y=-550)
+link_footprint(s, f.name)
 
 
 # Panasonic AQY212S/AQY214S, individual library models with common SOP4 geometry.
@@ -252,7 +318,7 @@ for name in ('AQY212S','AQY214S'):
         s.add_polyline([(55,y+55),(80,y+50),(65,y+25)])
     s.add_designator('K?',-500,500)
     s.add_parameter('Comment',name,x=-500,y=-500)
-    s.add_footprint(f.name,library_name='Oscill.PcbLib')
+    link_footprint(s, f.name)
 
 
 # Hongfa standard SMT S terminal, monostable 3 V coil. Body dimensions 10 x 6.5 x 5.65.
@@ -268,27 +334,23 @@ track(f,(-5.5,4.2),(-5.1,4.2))
 body(f,'HFD4 SMT mould',-5,-3.25,5,3.25,5.65,0)
 s=sch.add_symbol('HFD4_3-S')
 s.set_description('Hongfa HFD4/3-S monostable DPDT relay, standard SMT terminal')
-s.add_rectangle(-650,-650,650,650)
-functional_pin(s,1,'COIL+',-400,650,Rotation90.DEG_90,show_name=False)
-functional_pin(s,8,'COIL-',-400,-650,Rotation90.DEG_270,show_name=False)
-s.add_rectangle(-500,-250,-300,250)
-s.add_line(-400,650,-400,250)
-s.add_line(-400,-250,-400,-650)
-s.add_label('K',-420,0)
+s.add_rectangle(-400,-400,400,400)
+functional_pin(s,1,'COIL+',-250,400,Rotation90.DEG_90,show_name=False)
+functional_pin(s,8,'COIL-',-250,-400,Rotation90.DEG_270,show_name=False)
+s.add_rectangle(-300,-160,-200,160)
+s.add_line(-250,400,-250,160)
+s.add_line(-250,-160,-250,-400)
 for row,(nc,common,no) in enumerate(((2,3,4),(7,6,5))):
-    shift=0 if row==0 else -700
-    for n,y in ((nc,500+shift),(common,350+shift),(no,200+shift)):
-        functional_pin(s,n,'',650,y,Rotation90.DEG_0,show_name=False)
-    s.add_line(650,500+shift,200,500+shift)
-    s.add_line(650,350+shift,350,350+shift)
-    s.add_line(650,200+shift,200,200+shift)
-    s.add_line(350,350+shift,220,500+shift)
-    s.add_label('NC',430,520+shift)
-    s.add_label('COM',430,370+shift)
-    s.add_label('NO',430,220+shift)
-s.add_designator('K?',-650,850)
-s.add_parameter('Comment','HFD4_3-S',x=-650,y=-1100)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+    shift=0 if row==0 else -400
+    for n,y in ((nc,300+shift),(common,200+shift),(no,100+shift)):
+        functional_pin(s,n,'',400,y,Rotation90.DEG_0,show_name=False)
+    s.add_line(400,300+shift,100,300+shift)
+    s.add_line(400,200+shift,250,200+shift)
+    s.add_line(400,100+shift,100,100+shift)
+    s.add_line(250,200+shift,130,300+shift)
+s.add_designator('K?',-400,550)
+s.add_parameter('Comment','HFD4_3-S',x=-400,y=-650)
+link_footprint(s, f.name)
 
 
 # YLPTEC A0503S-2WR3, 2 W isolated dual-output DC/DC converter.
@@ -318,7 +380,7 @@ s.add_label('DC',-400,80)
 s.add_label('DC',250,80)
 s.add_designator('U?',-500,600)
 s.add_parameter('Comment','A0503S-2WR3',x=-500,y=-600)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+link_footprint(s, f.name)
 
 
 # TDK ACH3218-223-TD01, vertical SMD three-terminal T filter.
@@ -463,6 +525,29 @@ circuit_pin(s,2,'A',300,0,Rotation90.DEG_0)
 diode_left(s,-300,300,cathode_kink=True)
 
 
+# 1206 resistor based on Resistor generic and R_1206 in SSSAlDataBaseLib.
+# Vishay D25/CRCW1206-P reflow pattern: G=1.50, Y=1.05, X=1.80 mm.
+f=fp('R_1206','Generic 3216/1206 SMD resistor',0.6)
+pad(f,1,-1.275,0,1.05,1.8)
+pad(f,2,1.275,0,1.05,1.8)
+track(f,(-0.6,1.08),(0.6,1.08),width=0.1)
+track(f,(-0.6,-1.08),(0.6,-1.08),width=0.1)
+track(f,(-2.05,1.25),(-1.8,1.25),width=0.1)
+rect(f,-2.3,-1.45,2.3,1.45,PcbLayer.MECHANICAL_15,0.05)
+body(f,'1206 resistor body',-1.15,-0.8,1.15,0.8,0.6,0,0x202020)
+body(f,'1206 terminal 1',-1.6,-0.8,-1.15,0.8,0.6,0,0xC0C0C0)
+body(f,'1206 terminal 2',1.15,-0.8,1.6,0.8,0.6,0,0xC0C0C0)
+s=sch.add_symbol('R_1206')
+s.set_description('Generic SMD resistor, 1206/3216 package; set Value on placement')
+s.add_rectangle(-40,-100,40,100)
+functional_pin(s,1,'',0,100,Rotation90.DEG_90,show_name=False,length=50)
+functional_pin(s,2,'',0,-100,Rotation90.DEG_270,show_name=False,length=50)
+s.add_designator('R?',100,80)
+s.add_parameter('Value','?',x=100,y=-20,is_hidden=True)
+s.add_parameter('Comment','=Value',x=100,y=-20)
+link_footprint(s, f.name)
+
+
 # Generic vertical BNC pattern: centre plus four shell legs.
 f=fp('BNC_VERTICAL_THT_5PIN','Generic vertical BNC THT, 4 shell legs',20.6)
 pad(f,1,0,0,2.0,2.0,1.2,PadShape.CIRCLE)
@@ -489,7 +574,7 @@ s.add_label('SIG',-100,0)
 s.add_label('SH',-150,-200)
 s.add_designator('XW?',-200,400)
 s.add_parameter('Comment','BNC_VERTICAL_THT',x=-200,y=-450)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+link_footprint(s, f.name)
 
 
 # PBD-40 female vertical socket, 2x20, based on Connfly DS1023 straight type.
@@ -530,7 +615,7 @@ for row in range(20):
                    show_name=False)
 s.add_designator('XS?',-300,1300)
 s.add_parameter('Comment','PBD_2X20_2P54',x=-300,y=-1300)
-s.add_footprint(f.name,library_name='Oscill.PcbLib')
+link_footprint(s, f.name)
 
 
 sch.save(ROOT/'Oscill.SchLib')

@@ -56,7 +56,7 @@ DocumentUniqueId=QXMBNEKL
 
 [Document2]
 DocumentPath=AnalExtend.SchDoc
-AnnotationEnabled=1
+AnnotationEnabled=0
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
 AnnotateSuffix=
@@ -103,7 +103,7 @@ ClassGenCCAutoRoomEnabled=1
 ClassGenNCAutoScope=None
 DItemRevisionGUID=
 GenerateClassCluster=0
-DocumentUniqueId=G6JXJ1TB
+DocumentUniqueId=H5QTYECK
 
 [Document5]
 DocumentPath=..\..\..\..\SSSAlDataBaseLib\SssAccesDatbase.DbLib
@@ -124,7 +124,7 @@ DocumentUniqueId=
 
 [Document6]
 DocumentPath=DiffMeasure.SchDoc
-AnnotationEnabled=0
+AnnotationEnabled=1
 AnnotateStartValue=1
 AnnotationIndexControlEnabled=0
 AnnotateSuffix=
@@ -258,7 +258,7 @@ OutputDefault20=0
 [OutputGroup2]
 Name=Simulator Outputs
 Description=
-TargetPrinter=Adobe PDF
+TargetPrinter=Microsoft Print to PDF
 PrinterOptions=Record=PrinterOptions|Copies=1|Duplex=1|TrueTypeOptions=3|Collate=1|PrintJobKind=1|PrintWhat=1
 
 [OutputGroup3]
