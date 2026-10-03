@@ -37,10 +37,11 @@ def pad(fp, n, x, y, w, h, hole=0, shape=PadShape.RECTANGLE):
 
 
 def body(fp, name, x1, y1, x2, y2, height, z=0, color=0x303030):
+    # Extruded Overall Height is measured from the board, not from standoff.
     fp.add_extruded_3d_body(
         outline_points_mils=[(mil(x1),mil(y1)),(mil(x2),mil(y1)),
                              (mil(x2),mil(y2)),(mil(x1),mil(y2))],
-        layer=PcbLayer.MECHANICAL_1, overall_height_mils=mil(height),
+        layer=PcbLayer.MECHANICAL_1, overall_height_mils=mil(z + height),
         standoff_height_mils=mil(z), side=PcbBodyProjection.TOP,
         name=name, body_color_3d=color)
 
@@ -616,6 +617,90 @@ for row in range(20):
 s.add_designator('XS?',-300,1300)
 s.add_parameter('Comment','PBD_2X20_2P54',x=-300,y=-1300)
 link_footprint(s, f.name)
+
+
+# STM32F103RCT6 core board, viewed from above with USB-C at the right.
+# The four 14-pin rows mate with two PBD 2x14 female sockets.
+module_rows=(
+    ('C1 C3 A0 A2 A4 A6 C4 B0 B2 B11 B13 B15 C7 G'.split(), 2, 12.70),
+    ('C0 C2 VREF A1 A3 A5 A7 C5 B1 B10 B12 B14 C6 3V3'.split(), 1, 10.16),
+    ('RST BAT B8 B6 B4 D2 C11 A15 A13 A11 A9 C9 3V3 5V'.split(), 30, -10.16),
+    ('C13 B9 B7 B5 B3 C12 C10 A14 A12 A10 A8 C8 BTO G'.split(), 29, -12.70),
+)
+MODULE_SOCKET_HEIGHT = 8.5
+MODULE_SPACER_HEIGHT = 2.54
+MODULE_PCB_THICKNESS = 1.6
+MODULE_PCB_BOTTOM = MODULE_SOCKET_HEIGHT + MODULE_SPACER_HEIGHT
+MODULE_COMPONENT_BOTTOM = MODULE_PCB_BOTTOM + MODULE_PCB_THICKNESS
+f=fp('STM32F103RCT6_MODULE_PBD_2X14',
+     'STM32F103RCT6 module on two 2x14 PBD sockets, 35.56x27.94 mm board',
+     MODULE_COMPONENT_BOTTOM+3.5)
+for cy,first_pin in ((11.43,1),(-11.43,29)):
+    for col in range(14):
+        x=(col-6.5)*2.54
+        for row in range(2):
+            n=first_pin+2*col+row
+            y=cy+(-1.27 if row==0 else 1.27)
+            pad(f,n,x,y,1.7,1.7,1.02,
+                PadShape.RECTANGLE if n==first_pin else PadShape.CIRCLE)
+    body(f,'PBD 2x14 socket',-17.55,cy-2.5,17.55,cy+2.5,
+         MODULE_SOCKET_HEIGHT,0,0x202020)
+    body(f,'Male header plastic spacer',-17.55,cy-2.5,17.55,cy+2.5,
+         MODULE_SPACER_HEIGHT,MODULE_SOCKET_HEIGHT,0xD8D000)
+    rect(f,-17.60,cy-2.55,17.60,cy+2.55,PcbLayer.TOP_OVERLAY)
+body(f,'STM32 module PCB',-17.78,-13.97,17.78,13.97,
+     MODULE_PCB_THICKNESS,MODULE_PCB_BOTTOM,0x202020)
+body(f,'USB-C shell',10.0,-4.5,19.0,4.5,3.5,
+     MODULE_COMPONENT_BOTTOM,0xB0B0B0)
+for x in (-5.0,-1.5,2.0):
+    body(f,'Module key',x-1.2,-1.2,x+1.2,1.2,2.0,
+         MODULE_COMPONENT_BOTTOM,0x303030)
+rect(f,-18.30,-14.50,19.50,14.50,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-17.5,13.6),(-16.9,13.6))
+s=sch.add_symbol('STM32F103RCT6_MODULE_PBD_2X14')
+s.set_description('STM32F103RCT6 core board, 56 pins, two PBD 2x14 sockets')
+s.add_rectangle(-450,-1450,450,1450)
+for group,(names,first,y_mm) in enumerate(module_rows):
+    for col,name in enumerate(names):
+        number=first+2*col
+        y=1350-(col+(group%2)*14)*100
+        x=-450 if group<2 else 450
+        direction=Rotation90.DEG_180 if group<2 else Rotation90.DEG_0
+        functional_pin(s,number,name,x,y,direction)
+s.add_designator('A?',-450,1650)
+s.add_parameter('Comment','STM32F103RCT6_MODULE_PBD_2X14',x=-450,y=-1650)
+link_footprint(s, f.name)
+
+
+# Mechanical-only Mingwudianzi module from the supplied 29.3 x 18.9 mm photo.
+# The three mounting centres are estimated from the scaled photograph.
+module_name='MINGWU_29P3X18P9_MECH'
+f=fp(module_name,'Mingwudianzi 29.3x18.9 mm board, 3 mounting holes, 6 mm standoffs',10.9)
+for x,y in ((-12.45,-9.45),(-12.45,9.45),(13.10,0.0)):
+    f.add_pad(designator='',position_mils=(mil(x),mil(y)),
+              width_mils=mil(2.5),height_mils=mil(2.5),
+              layer=PcbLayer.MULTI_LAYER,shape=PadShape.CIRCLE,
+              hole_size_mils=mil(2.5),plated=False,
+              solder_mask_expansion_mode='none',
+              paste_mask_expansion_mode='none')
+rect(f,-14.65,-9.45,14.65,9.45,PcbLayer.TOP_OVERLAY,0.12)
+rect(f,-15.25,-11.65,15.25,11.65,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-14.6,-9.8),(-13.4,-9.8))
+model_file=ROOT/'Mingwu_29p3x18p9_Mechanical.step'
+model=pcb.add_embedded_model(name=model_file.name,model_data=model_file.read_bytes())
+f.add_embedded_3d_model(
+    model,layer=PcbLayer.MECHANICAL_1,side=PcbBodyProjection.TOP,
+    bounds_mils=(mil(-15.25),mil(-11.65),mil(15.25),mil(11.65)),
+    overall_height_mils=mil(10.9),standoff_height_mils=0,
+    name='Mingwudianzi module on 6 mm standoffs')
+s=sch.add_symbol(module_name)
+s.set_description('Mechanical-only Mingwudianzi module; no electrical pins')
+s.add_rectangle(-350,-250,350,250)
+s.add_label('MODULE',-200,80)
+s.add_label('MECH ONLY',-250,-80)
+s.add_designator('A?',-350,400)
+s.add_parameter('Comment',module_name,x=-350,y=-400)
+link_footprint(s,f.name)
 
 
 sch.save(ROOT/'Oscill.SchLib')
