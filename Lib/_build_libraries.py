@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
+from _silkscreen import trim_segments
 
 from altium_monkey import (
     AltiumPcbLib, AltiumSchLib, PadHoleShape, PadShape, PcbBodyProjection, PcbLayer,
@@ -18,8 +19,9 @@ def mil(value):
 
 
 def track(fp, p1, p2, layer=PcbLayer.TOP_OVERLAY, width=0.12):
-    fp.add_track(tuple(map(mil, p1)), tuple(map(mil, p2)),
-                 width_mils=mil(width), layer=layer)
+    for start, end in trim_segments(fp.pads, p1, p2, width, int(layer)):
+        fp.add_track(tuple(map(mil, start)), tuple(map(mil, end)),
+                     width_mils=mil(width), layer=layer)
 
 
 def rect(fp, x1, y1, x2, y2, layer, width=0.12):
