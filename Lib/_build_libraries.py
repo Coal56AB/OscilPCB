@@ -30,12 +30,16 @@ def rect(fp, x1, y1, x2, y2, layer, width=0.12):
         track(fp,p,q,layer,width)
 
 
-def pad(fp, n, x, y, w, h, hole=0, shape=PadShape.RECTANGLE):
+def pad(fp, n, x, y, w, h, hole=0, shape=PadShape.RECTANGLE,
+        mask_expansion=None):
     fp.add_pad(designator=str(n), position_mils=(mil(x),mil(y)),
                width_mils=mil(w), height_mils=mil(h),
                layer=PcbLayer.MULTI_LAYER if hole else PcbLayer.TOP,
                shape=shape, hole_size_mils=mil(hole),
-               plated=True if hole else None)
+               plated=True if hole else None,
+               **({'solder_mask_expansion_mode': 'manual',
+                   'solder_mask_expansion_mils': mil(mask_expansion)}
+                  if mask_expansion is not None else {}))
 
 
 def body(fp, name, x1, y1, x2, y2, height, z=0, color=0x303030):
@@ -140,7 +144,9 @@ for side in range(4):
         elif side==1: x,y=t,4.3; w,h=0.3,1.5
         elif side==2: x,y=4.3,-t; w,h=1.5,0.3
         else: x,y=-t,-4.3; w,h=0.3,1.5
-        pad(f,n,x,y,w,h)
+        # One Altium internal unit below 0.025 mm keeps the 0.15 mm mask bridge
+        # from rounding just under the DRC threshold.
+        pad(f,n,x,y,w,h,mask_expansion=0.024999)
 rect(f,-3.45,-3.45,3.45,3.45,PcbLayer.TOP_OVERLAY)
 rect(f,-5.35,-5.35,5.35,5.35,PcbLayer.MECHANICAL_15,0.05)
 track(f,(-5.1,-3.4),(-4.8,-3.4))
