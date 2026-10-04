@@ -1,4 +1,4 @@
 Record=TopLevelDocument|FileName=AnalExtend.SchDoc
 Record=SheetSymbol|SourceDocument=AnalExtend.SchDoc|Designator=Channel 0|SchDesignator=Channel 0|FileName=DiffMeasure.SchDoc|SymbolType=Normal|RawFileName=DiffMeasure.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
 Record=SheetSymbol|SourceDocument=AnalExtend.SchDoc|Designator=Channel 1|SchDesignator=Channel 1|FileName=DiffMeasure.SchDoc|SymbolType=Normal|RawFileName=DiffMeasure.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
-Record=SheetSymbol|SourceDocument=AnalExtend.SchDoc|Designator=Designator|SchDesignator=Designator|FileName=Interfaces.SchDoc|SymbolType=Normal|RawFileName=Interfaces.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
+Record=SheetSymbol|SourceDocument=AnalExtend.SchDoc|Designator=Interfaces|SchDesignator=Interfaces|FileName=Interfaces.SchDoc|SymbolType=Normal|RawFileName=Interfaces.SchDoc|DesignItemId= |SourceLibraryName= |ObjectKind=Sheet Symbol|RevisionGUID= |ItemGUID= |VaultGUID= 
