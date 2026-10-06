@@ -213,8 +213,8 @@ s.add_parameter('Comment','OPA356',x=-400,y=-800)
 link_footprint(s, f.name)
 
 
-# ADI ADA4940-1ARZ, R-8 narrow SOIC: 3.9 x 4.9 mm body, 1.27 mm pitch.
-f=fp('ADA4940-1ARZ_SOIC8','ADI R-8 SOIC_N, 1.27 mm pitch',1.75)
+# ADI AD8138ARZ, R-8 narrow SOIC: 3.9 x 4.9 mm body, 1.27 mm pitch.
+f=fp('AD8138ARZ_SOIC8','ADI R-8 SOIC_N, 1.27 mm pitch',1.75)
 for i in range(4):
     y=1.905-i*1.27
     pad(f,i+1,-2.65,y,1.5,0.6)
@@ -222,18 +222,19 @@ for i in range(4):
 rect(f,-1.75,-2.4,1.75,2.4,PcbLayer.TOP_OVERLAY)
 rect(f,-3.7,-2.85,3.7,2.85,PcbLayer.MECHANICAL_15,0.05)
 track(f,(-3.55,2.55),(-3.25,2.55))
-body(f,'ADA4940-1 SOIC-8 mould',-1.95,-2.45,1.95,2.45,1.75)
-s=sch.add_symbol('ADA4940-1ARZ')
-s.set_description('ADI ADA4940-1ARZ fully differential ADC driver, SOIC-8 R-8')
+body(f,'AD8138 SOIC-8 mould',-1.95,-2.45,1.95,2.45,1.75)
+s=sch.add_symbol('AD8138ARZ')
+s.set_description('ADI AD8138ARZ low distortion differential ADC driver, SOIC-8 R-8')
 s.add_rectangle(-450,-400,450,400)
 for n,name,y in [(8,'+IN',300),(1,'-IN',100),
-                 (2,'VOCM',-100),(7,'DISABLE',-300)]:
+                 (2,'VOCM',-100)]:
     functional_pin(s,n,name,-450,y,Rotation90.DEG_180)
+functional_pin(s,7,'',-450,-300,Rotation90.DEG_180,show_name=False)
 for n,name,y in [(4,'+OUT',300),(5,'-OUT',100),
                  (3,'+VS',-100),(6,'-VS',-300)]:
     functional_pin(s,n,name,450,y,Rotation90.DEG_0)
 s.add_designator('DA?',-450,600)
-s.add_parameter('Comment','ADA4940-1ARZ',x=-450,y=-600)
+s.add_parameter('Comment','AD8138ARZ',x=-450,y=-600)
 link_footprint(s, f.name)
 
 
