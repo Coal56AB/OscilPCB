@@ -587,6 +587,129 @@ s.add_parameter('Comment','BNC_VERTICAL_THT',x=-200,y=-450)
 link_footprint(s, f.name)
 
 
+# TI SN74CB3Q3257PWR, PW0016A TSSOP-16.  TI's land pattern uses
+# 0.45 x 1.50 mm pads, 0.65 mm pitch, and 5.80 mm between row centres.
+f=fp('SN74CB3Q3257PWR_TSSOP16',
+     'TI PW0016A TSSOP-16, 0.65 mm pitch',1.2)
+for i in range(8):
+    y=2.275-i*0.65
+    pad(f,i+1,-2.9,y,1.5,0.45)
+    pad(f,16-i,2.9,y,1.5,0.45)
+rect(f,-2.2,-2.5,2.2,2.5,PcbLayer.TOP_OVERLAY)
+rect(f,-3.9,-3.0,3.9,3.0,PcbLayer.MECHANICAL_15,0.05)
+track(f,(-3.65,2.75),(-3.35,2.75))
+body(f,'SN74CB3Q3257 TSSOP-16 mould',-2.2,-2.5,2.2,2.5,1.2)
+s=sch.add_symbol('SN74CB3Q3257PWR')
+s.set_description('TI 4-channel 2:1 bidirectional FET bus switch, TSSOP-16 PW')
+s.add_rectangle(-500,-600,500,600)
+for row,(n,name) in enumerate(((4,'1A'),(7,'2A'),(9,'3A'),(12,'4A'))):
+    functional_pin(s,n,name,-500,400-row*200,Rotation90.DEG_180)
+for row,(n,name) in enumerate(((2,'1B1'),(3,'1B2'),(5,'2B1'),(6,'2B2'),
+                               (11,'3B1'),(10,'3B2'),(14,'4B1'),(13,'4B2'))):
+    functional_pin(s,n,name,500,500-row*140,Rotation90.DEG_0)
+functional_pin(s,1,'S',-500,-400,Rotation90.DEG_180)
+functional_pin(s,15,'OE_N',-500,-550,Rotation90.DEG_180)
+functional_pin(s,16,'VCC',0,600,Rotation90.DEG_90)
+functional_pin(s,8,'GND',0,-600,Rotation90.DEG_270)
+s.add_label('4 x 2:1 BUS SW',-300,520)
+s.add_designator('DD?',-500,800)
+s.add_parameter('Comment','SN74CB3Q3257PWR',x=-500,y=-800)
+link_footprint(s, f.name)
+
+
+# Samtec VITA 57.1 FMC LPC mating pair.  Both parts have four populated rows
+# (C, D, G, H), 40 positions per row, circular 0.64 mm SMD lands, and two
+# 1.27 mm NPTH alignment holes.  The row order and guide-hole Y positions are
+# intentionally mirrored between the mezzanine-card plug and carrier socket.
+def fmc_lpc_footprint(name, description, outline_x, outline_y, rows,
+                      left_hole_y, right_hole_y, height):
+    f=fp(name,description,height)
+    for row_name,y in rows:
+        for column in range(1,41):
+            x=(20.5-column)*1.27
+            pad(f,f'{row_name}{column}',x,y,0.64,0.64,
+                shape=PadShape.CIRCLE)
+    hole_x=27.19 if name.startswith('ASP-134604') else 27.18
+    for x,y in ((-hole_x,left_hole_y),(hole_x,right_hole_y)):
+        f.add_pad(designator='',position_mils=(mil(x),mil(y)),
+                  width_mils=mil(1.27),height_mils=mil(1.27),
+                  layer=PcbLayer.MULTI_LAYER,shape=PadShape.CIRCLE,
+                  hole_size_mils=mil(1.27),plated=False,
+                  solder_mask_expansion_mode='none',
+                  paste_mask_expansion_mode='none')
+    hx,hy=outline_x/2,outline_y/2
+    rect(f,-hx,-hy,hx,hy,PcbLayer.TOP_OVERLAY)
+    rect(f,-hx-0.5,-hy-0.5,hx+0.5,hy+0.5,
+         PcbLayer.MECHANICAL_15,0.05)
+    track(f,(hx-1.4,hy+0.25),(hx-0.5,hy+0.25))
+    # Simplified connector body: base, outer walls, four contact guides, and
+    # gold contact rows.  This keeps 3D assembly clearance faithful without
+    # embedding a large vendor STEP model in the library.
+    base_height=0.8
+    body(f,f'{name} base',-hx,-hy,hx,hy,base_height,0,0x202020)
+    wall=1.2
+    body(f,f'{name} upper wall',-hx,hy-wall,hx,hy,
+         height-base_height,base_height,0x202020)
+    body(f,f'{name} lower wall',-hx,-hy,hx,-hy+wall,
+         height-base_height,base_height,0x202020)
+    body(f,f'{name} left wall',-hx,-hy+wall,-hx+wall,hy-wall,
+         height-base_height,base_height,0x202020)
+    body(f,f'{name} right wall',hx-wall,-hy+wall,hx,hy-wall,
+         height-base_height,base_height,0x202020)
+    for row_name,y in rows:
+        body(f,f'{name} row {row_name}',-24.95,y-0.28,24.95,y+0.28,
+             min(2.0,height-base_height),base_height,0x303030)
+        body(f,f'{name} contacts {row_name}',-24.8,y-0.08,24.8,y+0.08,
+             min(0.35,height-base_height),base_height,0xC0A050)
+    return f
+
+
+def fmc_lpc_symbol(name, footprint, description):
+    s=sch.add_symbol(name)
+    s.set_description(description)
+    s.set_part_count(4)
+    for part_id,row_name in enumerate(('C','D','G','H'),start=1):
+        s.add_rectangle(-300,-1050,300,1050,owner_part_id=part_id)
+        s.add_label(f'FMC LPC ROW {row_name}',-230,950,
+                    owner_part_id=part_id)
+        for column in range(1,41):
+            left=(column % 2)==1
+            y=850-((column-1)//2)*100
+            x=-300 if left else 300
+            orientation=(Rotation90.DEG_180 if left else Rotation90.DEG_0)
+            s.add_pin(make_sch_pin(
+                designator=f'{row_name}{column}',name=f'{row_name}{column}',
+                location_mils=SchPointMils.from_mils(x,y),
+                orientation=orientation,length_mils=200,
+                electrical_type=PinElectrical.PASSIVE,
+                name_visible=False,designator_visible=True,
+                owner_part_id=part_id,name_font=font,designator_font=font))
+        s.add_designator('XS?',-300,1250,owner_part_id=part_id)
+        s.add_parameter('Comment',name,x=-300,y=-1250,
+                        owner_part_id=part_id)
+    link_footprint(s,footprint)
+    return s
+
+
+male_rows=(('C',3.175),('D',1.655),('G',-1.655),('H',-3.175))
+f=fmc_lpc_footprint(
+    'ASP-134604-01_FMC_LPC_MALE',
+    'Samtec ASP-134604-01 VITA 57.1 FMC LPC male, 160 SMD contacts',
+    55.78,14.68,male_rows,-3.05,0.0,6.22)
+fmc_lpc_symbol(
+    'ASP-134604-01',f.name,
+    'Samtec VITA 57.1 FMC LPC male plug, 160 contacts, 10 mm mated height')
+
+female_rows=(('H',3.175),('G',1.905),('D',-1.905),('C',-3.175))
+f=fmc_lpc_footprint(
+    'ASP-134603-01_FMC_LPC_FEMALE',
+    'Samtec ASP-134603-01 VITA 57.1 FMC LPC female, 160 SMD contacts',
+    56.62,13.23,female_rows,0.0,-3.05,11.71)
+fmc_lpc_symbol(
+    'ASP-134603-01',f.name,
+    'Samtec VITA 57.1 FMC LPC female socket, 160 contacts, 10 mm mating pair')
+
+
 # PBD-40 female vertical socket, 2x20, based on Connfly DS1023 straight type.
 f=fp('PBD_2X20_2P54_THT','2x20 vertical female socket, 2.54 mm pitch, 8.5 mm body',8.5)
 for col in range(20):
