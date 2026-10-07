@@ -31,5 +31,3 @@
 - `AnalExtend/AnalExtend.PrjPcb` — проект Altium Designer; в этой же папке находятся PCB и схемы.
 - `Lib/` — библиотеки символов, посадочных мест и 3D-моделей. Подробности для разработчика приведены в [Lib/DEVELOPMENT.md](Lib/DEVELOPMENT.md).
 - `Manufacture/` — Gerber-файлы и файлы сверловки.
-
-Откройте `AnalExtend/AnalExtend.PrjPcb` в Altium Designer 19, чтобы просмотреть или изменить схемы и плату. Изображения верхней и нижней сторон выше получены из файлов `Manufacture/`, а 3D-виды — из геометрии и встроенных моделей `AnalExtend.PcbDoc` с поверхностью платы из `Manufacture/`.
