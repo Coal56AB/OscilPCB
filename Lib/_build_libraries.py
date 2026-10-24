@@ -140,16 +140,18 @@ for side in range(4):
     for i in range(12):
         n=side*12+i+1
         t=-2.75+i*0.5
-        if side==0: x,y=-4.3,t; w,h=1.5,0.3
-        elif side==1: x,y=t,4.3; w,h=0.3,1.5
-        elif side==2: x,y=4.3,-t; w,h=1.5,0.3
-        else: x,y=-t,-4.3; w,h=0.3,1.5
+        # AD9288 Fig. 5/34: component-side (top) view, pin 1 upper left,
+        # numbering counterclockwise. Altium's positive Y points upwards.
+        if side==0: x,y=-4.3,-t; w,h=1.5,0.3
+        elif side==1: x,y=t,-4.3; w,h=0.3,1.5
+        elif side==2: x,y=4.3,t; w,h=1.5,0.3
+        else: x,y=-t,4.3; w,h=0.3,1.5
         # One Altium internal unit below 0.025 mm keeps the 0.15 mm mask bridge
         # from rounding just under the DRC threshold.
         pad(f,n,x,y,w,h,mask_expansion=0.024999)
 rect(f,-3.45,-3.45,3.45,3.45,PcbLayer.TOP_OVERLAY)
 rect(f,-5.35,-5.35,5.35,5.35,PcbLayer.MECHANICAL_15,0.05)
-track(f,(-5.1,-3.4),(-4.8,-3.4))
+track(f,(-5.1,3.4),(-4.8,3.4))
 body(f,'LQFP-48 mould',-3.5,-3.5,3.5,3.5,1.5,0.1)
 ad={i:'GND' for i in [1,12,16,27,29,32,34,45]}
 ad.update({2:'AINA',3:'AINA_N',4:'DFS',5:'REFINA',6:'REFOUT',7:'REFINB',
@@ -271,7 +273,8 @@ link_footprint(s, f.name)
 # AMS drawing 042292: body 6.30-6.71 x 3.30-3.71 mm, 2.29 mm lead pitch,
 # 6.71-7.29 mm overall lead span, 1.80 mm maximum height.
 f=fp('AMS1117-ADJ_SOT223','AMS SOT-223, 2.29 mm lead pitch, tab is VOUT',1.8)
-for n,x in ((1,-2.29),(2,0),(3,2.29)):
+# Top view rotated 180 degrees from AMS page 1: tab below, pin 1 right.
+for n,x in ((1,2.29),(2,0),(3,-2.29)):
     pad(f,n,x,3.25,1.3,2.0)
 pad(f,2,0,-3.25,3.6,2.0)
 track(f,(-3.35,-1.85),(-1.9,-1.85))
@@ -280,9 +283,9 @@ track(f,(-3.35,-1.85),(-3.35,1.85))
 track(f,(3.35,-1.85),(3.35,1.85))
 track(f,(-3.35,1.85),(3.35,1.85))
 rect(f,-3.85,-4.55,3.85,4.55,PcbLayer.MECHANICAL_15,0.05)
-track(f,(-3.65,2.15),(-3.35,2.15))
+track(f,(3.35,2.15),(3.65,2.15))
 body(f,'AMS1117 tab VOUT',-1.525,-4.0,1.525,-1.4,0.3,0,0xC0A050)
-for n,x in ((1,-2.29),(2,0),(3,2.29)):
+for n,x in ((1,2.29),(2,0),(3,-2.29)):
     body(f,f'AMS1117 lead {n}',x-0.37,1.4,x+0.37,4.0,
          0.3,0,0xC0A050)
 body(f,'AMS1117 SOT-223 mould',-3.25,-1.75,3.25,1.75,
@@ -301,11 +304,13 @@ link_footprint(s, f.name)
 # Panasonic AQY212S/AQY214S, individual library models with common SOP4 geometry.
 for name in ('AQY212S','AQY214S'):
     f=fp(name+'_SOP4','Panasonic GU SOP4, 2.54 mm pitch',2.2)
-    for n,x,y in [(1,-1.27,3),(2,-1.27,-3),(3,1.27,-3),(4,1.27,3)]:
+    # The manufacturer's top-view package mark is at the lower left.
+    # Pins 1/2 are on one lead row, 3/4 on the opposite row.
+    for n,x,y in [(1,-1.27,-3),(2,1.27,-3),(3,1.27,3),(4,-1.27,3)]:
         pad(f,n,x,y,0.8,1.2)
     rect(f,-2.15,-2.2,2.15,2.2,PcbLayer.TOP_OVERLAY)
     rect(f,-2.8,-3.85,2.8,3.85,PcbLayer.MECHANICAL_15,0.05)
-    track(f,(-2.6,3.5),(-2.35,3.5))
+    track(f,(-2.6,-3.5),(-2.35,-3.5))
     body(f,'SOP4 mould',-2.2,-2.15,2.2,2.15,2.2,0)
     s=sch.add_symbol(name)
     s.set_description('Panasonic PhotoMOS GU SOP4, 1 Form A')
@@ -335,12 +340,13 @@ for name in ('AQY212S','AQY214S'):
 f=fp('HFD4_3_S_SMT','Hongfa HFD4/3-S, standard SMT leads (not S1 or S3)',5.65)
 xs=[-3.8,-0.6,1.6,3.8]
 for i,x in enumerate(xs):
-    pad(f,i+1,x,3.175,0.8,2.15)
-    pad(f,8-i,x,-3.175,0.8,2.15)
+    # Hongfa's wiring diagram is a BOTTOM view: mirror Y for Altium.
+    pad(f,i+1,x,-3.175,0.8,2.15)
+    pad(f,8-i,x,3.175,0.8,2.15)
 track(f,(-5.1,-2.7),(-5.1,2.7))
 track(f,(5.1,-2.7),(5.1,2.7))
 rect(f,-5.65,-4.65,5.65,4.65,PcbLayer.MECHANICAL_15,0.05)
-track(f,(-5.5,4.2),(-5.1,4.2))
+track(f,(-5.5,-4.2),(-5.1,-4.2))
 body(f,'HFD4 SMT mould',-5,-3.25,5,3.25,5.65,0)
 s=sch.add_symbol('HFD4_3-S')
 s.set_description('Hongfa HFD4/3-S monostable DPDT relay, standard SMT terminal')
