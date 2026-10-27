@@ -30,6 +30,7 @@
   "button_opening_mm": 7.0,
   "button_corner_radius_mm": 0.6,
   "encoder_shaft_opening_mm": 8.0,
+  "encoder_cap_diameter_mm": 11.5,
   "bnc_opening_mm": 19.0,
   "bnc_well_wall_mm": 2.1,
   "bnc_well_floor_mm": 1.2,

@@ -824,7 +824,7 @@ def build_reference(board):
     for name in ['SET_CH0','SET_CH1','TIME','TRG','FUNC']:
         x,y=data['controls'][name]
         bottom=data['encoder_cap_bottom_mm']
-        cap=BRepAlgoAPI_Cut(cylinder(x,y,bottom,bottom+12,7.5),cylinder(x,y,bottom-.1,21.4,3.1)).Shape()
+        cap=BRepAlgoAPI_Cut(cylinder(x,y,bottom,bottom+12,PARAM['encoder_cap_diameter_mm']/2),cylinder(x,y,bottom-.1,21.4,3.1)).Shape()
         caps.append((cap,BLACK))
     write_model(ROOT/'src/encoder_caps_reference.step',caps)
 
@@ -848,7 +848,13 @@ def check_shapes(export_source=False):
                         edge_x=PARAM['pcb_edge_clearance_mm']+PARAM['wall_mm']
                         selected=q[3]-q[0]<1e-5 and q[4]-q[1]<1e-5 and q[5]-q[2]>3 and abs(q[1]-34.2)<1e-5 and any(abs(q[0]-x)<1e-5 for x in (-edge_x,190+edge_x))
                     elif loops[0]=='window_edges':
-                        selected=q[0]>10 and q[3]<180 and q[1]>45 and q[4]<152 and q[2]>28.49
+                        window_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
+                        window_top=window_bottom+PARAM['panel_thickness_mm']
+                        # Keep the active-area lip sharp: a radius on this acute
+                        # edge removes 1-2 mm of the shallow bevel's useful reach.
+                        upper=abs(q[2]-window_top)<1e-5 and abs(q[5]-window_top)<1e-5
+                        corner=abs(q[2]-window_bottom)<1e-5 and abs(q[5]-window_top)<1e-5
+                        selected=q[0]>10 and q[3]<180 and q[1]>45 and q[4]<152 and (upper or corner)
                     elif loops[0]=='stand_front_edges':
                         selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5 and p.Y()<110
                     elif loops[0]=='thumb_pad_edges':

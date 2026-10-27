@@ -10,10 +10,37 @@ from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
+from OCP.TopAbs import TopAbs_FACE
+from OCP.TopExp import TopExp_Explorer
+from OCP.TopoDS import TopoDS
+from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.GeomAbs import GeomAbs_Plane
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+from OCP.gp import gp_Pnt
 
 
 def overlap(a,b):
     return all(a[k+3]>b[k]+1e-6 and b[k+3]>a[k]+1e-6 for k in range(3))
+
+
+def check_screen_bevel(shape,data):
+    x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
+    bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
+    faces=[];explorer=TopExp_Explorer(shape,TopAbs_FACE)
+    while explorer.More():
+        face=TopoDS.Face(explorer.Current());surface=BRepAdaptor_Surface(face);q=bbox(face)
+        if surface.GetType()==GeomAbs_Plane and ex-.01<q[0] and q[3]<ex+ew+.01 and ey-.01<q[1] and q[4]<ey+eh+.01 and q[2]>bottom-.01:
+            normal=surface.Plane().Axis().Direction()
+            if .1<abs(normal.Z())<.99:faces.append(face)
+        explorer.Next()
+    assert len(faces)==4,('screen must have four planar bevel faces',len(faces))
+    for t in (.25,.5,.75):
+        for px,py in ((x,y+t*h),(x+w,y+t*h),(x+t*w,y),(x+t*w,y+h)):
+            point=BRepBuilderAPI_MakeVertex(gp_Pnt(px,py,bottom)).Vertex()
+            distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in faces)
+            assert distance<.002,('screen bevel stops before active-area border',px,py,distance)
+    print('PASS: finished planar screen bevel reaches the active-area border on all four sides',flush=True)
 
 
 def mesh_check(name,shape):
@@ -82,6 +109,7 @@ def main(geometry_only=False,source_geometry=False):
         if not geometry_only and name in ['front','rear','power_cap','kickstand']:mesh_check(name,s)
         shapes[name]=s
         assert (ROOT/f'{name}.SLDPRT').is_file()
+    check_screen_bevel(shapes['front'],data)
     led_x,led_y=data['controls']['LED_RUN']
     assert led_x==data['controls']['RUN_STOP'][0],'RUN opening is not centred above RUN/STOP'
     led_opening=cylinder(led_x,led_y,panel_bottom-.1,panel_top+.1,1.79)
@@ -201,7 +229,8 @@ def main(geometry_only=False,source_geometry=False):
     print('PASS: reference BNC studs are vertical and proportioned to the selected interface; their full insertion sweep clears the case')
     assert len(assemblies['encoder_caps_reference'])==5
     for s,b in assemblies['encoder_caps_reference']:
-        assert abs(b[3]-b[0]-15)<1e-4 and abs(b[4]-b[1]-15)<1e-4,'caps must be diameter 15 mm'
+        diameter=PARAM['encoder_cap_diameter_mm']
+        assert abs(b[3]-b[0]-diameter)<1e-4 and abs(b[4]-b[1]-diameter)<1e-4,'encoder cap diameter differs from parameters'
         assert abs(b[2]-data['encoder_cap_bottom_mm'])<1e-5 and abs(b[5]-b[2]-12)<1e-5,'encoder cap height differs from panel clearance'
         assert 21-b[2]>=4,'encoder cap engages less than 4 mm of shaft'
     assert not any(f[1].startswith('Adapter_clearance_') for f in FEATURES['front']),'unnecessary adapter pockets remain'

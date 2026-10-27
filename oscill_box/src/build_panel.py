@@ -36,7 +36,7 @@ class Artwork:
             raise ValueError('Text crosses the angled sticker edge: '+s)
         for key,(cx,cy) in CONTROLS.items():
             if key in ['SET_CH0','SET_CH1','TIME','TRG','FUNC'] or key.startswith('BNC') or key=='LED_RUN':
-                radius=8 if key in ['SET_CH0','SET_CH1','TIME','TRG','FUNC'] else DATA['parameters']['bnc_opening_mm']/2+1.9 if key.startswith('BNC') else 2.5
+                radius=DATA['parameters']['encoder_cap_diameter_mm']/2+.5 if key in ['SET_CH0','SET_CH1','TIME','TRG','FUNC'] else DATA['parameters']['bnc_opening_mm']/2+2.3 if key.startswith('BNC') else 2.5
                 nearx=max(left,min(cx,left+width));neary=max(y,min(cy,y+size*.8))
                 if (nearx-cx)**2+(neary-cy)**2<radius**2:
                     raise ValueError('Text touches circular control: '+s+' / '+key)
@@ -105,25 +105,29 @@ class Artwork:
 def artworks():
     panel=Artwork(DATA['panel'])
     panel.polygon(DATA['panel_outline'],BG,GRID,.18)
-    for left,right in [(55.4,100.8),(100.8,125.2),(125.2,147.3),(147.3,173.3)]:
-        panel.rect(left+.35,-1.2,right-left-.7,38.1,'#1b2e37','#3c5662',.18,r=.8)
+    groups=[(('SET_CH0','EN_CH0','SET_CH1','EN_CH1'),44.7),
+            (('TIME','CURSOR'),21.4),(('TRG','TRG_MODE'),21.4),(('FUNC','MENU_BACK'),21.4)]
+    for controls,width in groups:
+        centre=sum(CONTROLS[key][0] for key in controls)/len(controls)
+        panel.rect(centre-width/2,-1.2,width,38.1,'#1b2e37','#3c5662',.18,r=.8)
     for i,key in enumerate(['BNC_Channel 0','BNC_Channel 1']):
         x,y=CONTROLS[key];col=[YELLOW,CYAN][i]
-        panel.text('CHANNEL '+str(i+1),x,29.2,3.4,INK,True)
         radius=DATA['parameters']['bnc_opening_mm']/2
-        panel.circle(x,y,radius+1.5,None,col,.65)
+        panel.rect(x-3.3,24.5,6.6,6.5,col,r=1)
+        panel.circle(x,y,radius+1.5,None,col,1.3)
         panel.circle(x,y,radius,'#ffffff','#b7c4ca',.12)
+        panel.text(str(i+1),x,26.4,4.4,BG,True)
     inputs_middle=(CONTROLS['BNC_Channel 0'][0]+CONTROLS['BNC_Channel 1'][0])/2
-    panel.text('Diff Input',inputs_middle,2.6,2.3,INK,True)
-    panel.text('1 MΩ each side',inputs_middle,-.2,2.3,INK)
-    panel.text('to GND',inputs_middle,-3.0,2.3,INK)
+    panel.text('Diff Input',inputs_middle,2.6,2.2,HINT)
+    panel.text('1 MΩ each side',inputs_middle,-.2,2.2,HINT)
+    panel.text('to GND',inputs_middle,-3,2.2,HINT)
     knobs=[('SET_CH0','CH1','SCALE / POSITION',YELLOW),('SET_CH1','CH2','SCALE / POSITION',CYAN),
            ('TIME','TIME','SCALE / POSITION',MUTED),('TRG','TRIGGER','PREVIEW / APPLY',GREEN),('FUNC','FUNC','HOLD: FINE',MUTED)]
     for key,label,hint,col in knobs:
-        x,y=CONTROLS[key];panel.circle(x,y,7.8,None,col,.4)
+        x,y=CONTROLS[key];panel.circle(x,y,DATA['parameters']['encoder_cap_diameter_mm']/2+.3,None,col,.4)
         panel.circle(x,y,DATA['parameters']['encoder_shaft_opening_mm']/2,'#ffffff','#b7c4ca',.1)
-        panel.text(label,x,33.7,2.6,INK,True)
-        panel.text(hint,x,15.5,1.7,HINT)
+        panel.text(label,x,y+DATA['parameters']['encoder_cap_diameter_mm']/2+.85,2.6,INK,True)
+        panel.text(hint,x,y-DATA['parameters']['encoder_cap_diameter_mm']/2-2.45,1.7,HINT)
     keys=[('EN_CH0','EN CH1','ON / MENU / 2X OFF',YELLOW),('EN_CH1','EN CH2','ON / MENU / 2X OFF',CYAN),
           ('CURSOR','CURSOR','HOLD: SETTINGS',MUTED),('TRG_MODE','TRG MODE','HOLD: SETTINGS',GREEN),
           ('MENU_BACK','MENU / BACK','HOLD: ZOOM',MUTED)]
@@ -139,13 +143,16 @@ def artworks():
     for key in ['EN_CH0','MENU_BACK']:
         x,y=CONTROLS[key]
         # Start below the hint, with no mark touching the button outline.
-        panel.line(x,.7,x,-3.6,CYAN,.3)
-    panel.line(first,-3.6,middle-15.5,-3.6,CYAN,.3)
-    panel.line(middle+15.5,-3.6,last,-3.6,CYAN,.3)
+        panel.line(x,.7,x,-3.6,HINT,.3)
+    panel.line(first,-3.6,middle-15.5,-3.6,HINT,.3)
+    panel.line(middle+15.5,-3.6,last,-3.6,HINT,.3)
     panel.text('SCREENSHOT + CSV',middle,-4.45,2.3,HINT,True)
-    x,y=CONTROLS['LED_RUN'];panel.text('RUN',x,32.1,1.8,INK,True)
+    x,y=CONTROLS['LED_RUN']
     panel.circle(x,y,2.3,None,GREEN,.3);panel.circle(x,y,1.8,'#ffffff','#b7c4ca',.1)
-    x,y=CONTROLS['RUN_STOP'];panel.text('RUN / STOP',x,20.3,2.4,INK,True)
+    x,y=CONTROLS['RUN_STOP']
+    gap_bottom=y+4.125;gap_top=CONTROLS['LED_RUN'][1]-2.45
+    # Centre the capital letters in the free gap, not their baseline.
+    panel.text('RUN / STOP',x,(gap_bottom+gap_top)/2-3*.718/2,3,INK,True)
     panel.rect(x-3.9,y-3.9,7.8,7.8,None,GREEN,.45,DATA['parameters']['button_corner_radius_mm']+.4)
     panel.rect(x-3.5,y-3.5,7,7,'#ffffff','#b7c4ca',.1,DATA['parameters']['button_corner_radius_mm'])
     panel.text('HOLD:',x,5.7,1.9,HINT);panel.text('FORCE TRIG',x,3.1,1.9,HINT)
