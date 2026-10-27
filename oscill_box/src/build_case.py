@@ -331,6 +331,47 @@ def curved_gusset(loop,bottom,top):
     return transform(solid,[dx,-dy,0,x,dy,dx,0,y,0,0,1,0])
 
 
+def screen_bevel_angle(run,height,radius):
+    dx,dz=run-radius,height-radius
+    angle=math.atan2(dz,dx)-math.asin(radius/math.hypot(dx,dz))
+    assert 0<angle<math.pi/2,'screen round does not fit the bezel'
+    return angle
+
+
+def rounded_screen_tool(data):
+    """Intersect two extruded sections, keeping the rectangular image corners clear."""
+    x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
+    bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
+    top=bottom+PARAM['panel_thickness_mm'];r=PARAM['screen_edge_radius_mm']
+    def side(gap):
+        angle=screen_bevel_angle(gap,top-bottom,r)
+        lower=(gap-r,bottom);upper=(-r*math.tan(angle/2),top)
+        lc=(lower[0],bottom+r);uc=(upper[0],top-r)
+        on=lambda c,a:(c[0]+r*math.cos(a),c[1]+r*math.sin(a))
+        lt=on(lc,math.pi/2-angle);ut=on(uc,math.pi/2-angle)
+        return [(None,(lower[0],bottom-1),lower),
+                (on(lc,-angle/2),lower,lt),(None,lt,ut),
+                (on(uc,math.pi/2-angle/2),ut,upper),(None,upper,(upper[0],top+1))]
+    def strip(left,right,a,b,axis):
+        left=side(left);right=side(right);wire=BRepBuilderAPI_MakeWire()
+        def point(p,reverse):
+            u,z=p;v=b-u if reverse else a+u
+            return gp_Pnt(v,ey-10,z) if axis=='x' else gp_Pnt(ex-10,v,z)
+        def add(mid,p,q,reverse=False):
+            p,q=point(p,reverse),point(q,reverse)
+            edge=BRepBuilderAPI_MakeEdge(p,q) if mid is None else BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(p,point(mid,reverse),q).Value())
+            wire.Add(edge.Edge())
+        for mid,p,q in left:add(mid,p,q)
+        wire.Add(BRepBuilderAPI_MakeEdge(point(left[-1][2],False),point(right[-1][2],True)).Edge())
+        for mid,p,q in reversed(right):add(mid,q,p,True)
+        wire.Add(BRepBuilderAPI_MakeEdge(point(right[0][1],True),point(left[0][1],False)).Edge())
+        face=BRepBuilderAPI_MakeFace(wire.Wire()).Face()
+        vector=gp_Vec(0,eh+20,0) if axis=='x' else gp_Vec(ew+20,0,0)
+        return BRepPrimAPI_MakePrism(face,vector).Shape()
+    return BRepAlgoAPI_Common(strip(x-ex,ex+ew-x-w,ex,ex+ew,'x'),
+                             strip(y-ey,ey+eh-y-h,ey,ey+eh,'y')).Shape()
+
+
 def feature_tool(kind,loops,lo,hi):
     if kind=='ADD_GUSSET':return curved_gusset(loops[0],lo,hi)
     if kind=='ADD_CORNER':return BRepAlgoAPI_Cut(shape_of(loops[0],lo,hi),shape_of(loops[1],lo-.1,hi+.1)).Shape()
@@ -533,8 +574,8 @@ def layout_and_plans(board):
     inner=R(-gap,-gap-extra,190+2*gap,160+2*gap+extra,gap)
     display=display_layout(board)
     active=display['active_mm']
-    # The inner bevel terminates exactly at the active-area border. The outer
-    # contour is independently centred on the case, preserving equal side fields.
+    # The finished rounded lip follows the active area. Keep the outside
+    # contour centred on the case, preserving equal side fields.
     screen_x,screen_y=active[:2]
     screen_width=active[3]-active[0]
     screen_height=active[4]-active[1]
@@ -543,6 +584,18 @@ def layout_and_plans(board):
                   screen_width+2*screen_bevel,screen_height+2*screen_bevel]
     bezel_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
     bezel_top=bezel_bottom+PARAM['panel_thickness_mm']
+    radius=PARAM['screen_edge_radius_mm']
+    def rounded_run(run):
+        # Tangency to a circle whose inward extreme is on the active border.
+        # Its centre is radius outward and radius above the underside.
+        angle=screen_bevel_angle(run,PARAM['panel_thickness_mm'],radius)
+        return PARAM['panel_thickness_mm']/math.tan(angle)
+    ex,ey,ew,eh=screen_outer
+    ix=ex+rounded_run(screen_x-ex)
+    iy=ey+rounded_run(screen_y-ey)
+    ir=ex+ew-rounded_run(ex+ew-screen_x-screen_width)
+    it=ey+eh-rounded_run(ey+eh-screen_y-screen_height)
+    screen_inner=[ix,iy,ir-ix,it-iy]
     wall_front=[(-3.1,34.2),(55.4,34.2),(65.4,37.3),(161.8,37.3),(171.8,34.2),(193.1,34.2)]
     film_outline=[(-2.6,-2.6-extra),(192.6,-2.6-extra),(192.6,33.8),(171.8,33.8),
                   (161.8,36.9),(65.4,36.9),(55.4,33.8),(-2.6,33.8)]
@@ -571,6 +624,7 @@ def layout_and_plans(board):
           'panel_inner_z_mm':panel_bottom,'film_z_mm':[film_bottom,film_top],
           'encoder_cap_bottom_mm':panel_top+.8,
           'screen_window':[screen_x,screen_y,screen_width,screen_height,0],
+          'screen_bevel_inner_window':screen_inner,
           'screen_bevel_width_mm':2*PARAM['panel_thickness_mm'],
           'screen_outer_window':screen_outer,
           'lcd':display,'top_ports_mm':ports,'top_access_mm':access,
@@ -612,11 +666,13 @@ def layout_and_plans(board):
     feature('front','FILLET','Outer_control_panel_round',PARAM['control_panel_edge_radius_mm'],panel_top,'deck')
     # The actual PCB edge between its ears is Y=45.09, beyond this wall.
     # A rectangular bounding-box cut would create an unnecessary visible slot.
-    sx,sy,sw,sh,_=data['screen_window']
+    sx,sy,sw,sh=screen_inner
     ex,ey,ew,eh=screen_outer
     feature('front','CUT_Z_LOFT','Screen_edge_bevel',bezel_bottom,bezel_top,
             P([(sx,sy),(sx+sw,sy),(sx+sw,sy+sh),(sx,sy+sh)]),
             P([(ex,ey),(ex+ew,ey),(ex+ew,ey+eh),(ex,ey+eh)]))
+    # Round the simple window before mounting webs split the surrounding faces.
+    feature('front','FILLET','Bezel_free_edge_round',PARAM['screen_edge_radius_mm'],0,'window_edges')
     # Local underside ribs occupy the empty lanes between controls. The panel
     # itself remains 13.5 mm above the PCB; ribs project lower only here.
     rib_width=PARAM['control_rib_width_mm'];rib_bottom=PARAM['control_rib_bottom_mm']
@@ -780,7 +836,6 @@ def layout_and_plans(board):
             R(rx-5.1,ry-5.4,10.2,10.8,.3))
     feature('front','CUT','Brace_clearance_RUN_STOP_housing',11.9,panel_bottom-.2,
             R(rx-3.5,ry-3.5,7,7,PARAM['button_corner_radius_mm']))
-    feature('front','FILLET','Bezel_free_edge_round',.4,0,'window_edges')
     feature('rear','FILLET','Outer_rear_round',2,rear_outer,'outer')
     for i,(x,y) in enumerate(case_screws):
         # A continuous rounded corner joins both walls over their height. It
@@ -830,9 +885,9 @@ def build_reference(board):
 
 
 def check_shapes(export_source=False):
-    result={}
+    result={};data=json.loads((ROOT/'src/layout.json').read_text())
     for name,features in FEATURES.items():
-        solid=None
+        solid=None;screen_blank=None
         lines=[]
         for kind,title,lo,hi,loops in features:
             if kind=='FILLET':
@@ -850,11 +905,11 @@ def check_shapes(export_source=False):
                     elif loops[0]=='window_edges':
                         window_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
                         window_top=window_bottom+PARAM['panel_thickness_mm']
-                        # Keep the active-area lip sharp: a radius on this acute
-                        # edge removes 1-2 mm of the shallow bevel's useful reach.
                         upper=abs(q[2]-window_top)<1e-5 and abs(q[5]-window_top)<1e-5
-                        corner=abs(q[2]-window_bottom)<1e-5 and abs(q[5]-window_top)<1e-5
-                        selected=q[0]>10 and q[3]<180 and q[1]>45 and q[4]<152 and (upper or corner)
+                        from OCP.GeomAbs import GeomAbs_Line
+                        inner=abs(q[2]-window_bottom)<1e-5 and abs(q[5]-window_bottom)<1e-5 and c.GetType()==GeomAbs_Line
+                        # Rounding the diagonal joins would obscure image corners.
+                        selected=q[0]>10 and q[3]<180 and q[1]>45 and q[4]<152 and (upper or inner)
                     elif loops[0]=='stand_front_edges':
                         selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5 and p.Y()<110
                     elif loops[0]=='thumb_pad_edges':
@@ -895,12 +950,20 @@ def check_shapes(export_source=False):
                             coords.append(encode('E',p.X(),p.Y(),p.Z()))
                     ex.Next()
                 if not edges:raise ValueError('No fillet edges '+title)
-                fillet.Build()
-                if not fillet.IsDone():raise ValueError('Fillet failed '+title)
-                solid=fillet.Shape();loops=coords
+                if loops[0]=='window_edges':
+                    # OCCT's edge fillet can create invalid corner patches here.
+                    # Equivalent analytic sections preserve the mitered corners;
+                    # SolidWorks uses the selected native rim edges below.
+                    solid=BRepAlgoAPI_Cut(screen_blank,rounded_screen_tool(data)).Shape()
+                else:
+                    fillet.Build()
+                    if not fillet.IsDone():raise ValueError('Fillet failed '+title)
+                    solid=fillet.Shape()
+                loops=coords
                 lines.append('\t'.join([kind,title,str(lo),str(hi),';'.join(loops)]));continue
             lines.append('\t'.join([kind,title,str(lo),str(hi),';'.join(loops)]))
             tool=feature_tool(kind,loops,lo,hi)
+            if title=='Screen_edge_bevel':screen_blank=solid
             if kind in ('ADD_GUSSET','ADD_CORNER'):write_model(ROOT/'src'/(title+'.step'),[(tool,BLUE)])
             solid=tool if solid is None else (BRepAlgoAPI_Fuse if kind.startswith('ADD') else BRepAlgoAPI_Cut)(solid,tool).Shape()
         if not BRepCheck_Analyzer(solid).IsValid():raise ValueError('Invalid '+name)

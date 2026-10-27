@@ -15,6 +15,7 @@
   "control_crossbar_bottom_mm": 9.5,
   "control_rib_round_mm": 1.0,
   "panel_thickness_mm": 2.4,
+  "screen_edge_radius_mm": 0.4,
   "film_recess_mm": 0.35,
   "switch_socket_width_mm": 1.8,
   "switch_socket_height_mm": 1.2,

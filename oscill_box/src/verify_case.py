@@ -14,7 +14,7 @@ from OCP.TopAbs import TopAbs_FACE
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS
 from OCP.BRepAdaptor import BRepAdaptor_Surface
-from OCP.GeomAbs import GeomAbs_Plane
+from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.gp import gp_Pnt
@@ -27,20 +27,27 @@ def overlap(a,b):
 def check_screen_bevel(shape,data):
     x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
     bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
-    faces=[];explorer=TopExp_Explorer(shape,TopAbs_FACE)
+    radius=PARAM['screen_edge_radius_mm']
+    faces=[];rounds=[];explorer=TopExp_Explorer(shape,TopAbs_FACE)
     while explorer.More():
         face=TopoDS.Face(explorer.Current());surface=BRepAdaptor_Surface(face);q=bbox(face)
-        if surface.GetType()==GeomAbs_Plane and ex-.01<q[0] and q[3]<ex+ew+.01 and ey-.01<q[1] and q[4]<ey+eh+.01 and q[2]>bottom-.01:
-            normal=surface.Plane().Axis().Direction()
-            if .1<abs(normal.Z())<.99:faces.append(face)
+        if ex-.01<q[0] and q[3]<ex+ew+.01 and ey-.01<q[1] and q[4]<ey+eh+.01 and q[2]>bottom-.01:
+            if surface.GetType()==GeomAbs_Plane:
+                normal=surface.Plane().Axis().Direction()
+                if .1<abs(normal.Z())<.99:faces.append(face)
+            elif surface.GetType()==GeomAbs_Cylinder and abs(surface.Cylinder().Radius()-radius)<1e-5:
+                rounds.append(face)
         explorer.Next()
     assert len(faces)==4,('screen must have four planar bevel faces',len(faces))
+    assert rounds,'screen edge rounds are missing'
     for t in (.25,.5,.75):
         for px,py in ((x,y+t*h),(x+w,y+t*h),(x+t*w,y),(x+t*w,y+h)):
-            point=BRepBuilderAPI_MakeVertex(gp_Pnt(px,py,bottom)).Vertex()
-            distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in faces)
-            assert distance<.002,('screen bevel stops before active-area border',px,py,distance)
-    print('PASS: finished planar screen bevel reaches the active-area border on all four sides',flush=True)
+            point=BRepBuilderAPI_MakeVertex(gp_Pnt(px,py,bottom+radius)).Vertex()
+            distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in rounds)
+            assert distance<.002,('rounded screen lip misses active-area border',px,py,distance)
+    aperture=box(x+.01,y+.01,bottom-.01,x+w-.01,y+h-.01,bottom+PARAM['panel_thickness_mm']+.01)
+    assert volume(BRepAlgoAPI_Common(shape,aperture).Shape())<.001,'screen lip obscures active area'
+    print('PASS: R%.1f screen lip follows active-area border on all four sides and leaves the image clear'%radius,flush=True)
 
 
 def mesh_check(name,shape):

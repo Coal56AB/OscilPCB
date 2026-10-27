@@ -11,7 +11,7 @@ CONTROLS=DATA['controls']
 MM=72/25.4
 BG='#14242c';FIELD='#192c35';INK='#f1f5f5';MUTED='#a9c2cd';GRID='#506772'
 HINT='#6f828b'
-YELLOW='#ffd166';CYAN='#64d8ef';GREEN='#73e5a4'
+YELLOW='#ffd166';CYAN='#64d8ef';GREEN='#73e5a4';RED='#f07178'
 
 
 class Artwork:
@@ -148,12 +148,12 @@ def artworks():
     panel.line(middle+15.5,-3.6,last,-3.6,HINT,.3)
     panel.text('SCREENSHOT + CSV',middle,-4.45,2.3,HINT,True)
     x,y=CONTROLS['LED_RUN']
-    panel.circle(x,y,2.3,None,GREEN,.3);panel.circle(x,y,1.8,'#ffffff','#b7c4ca',.1)
+    panel.circle(x,y,2.3,None,RED,.3);panel.circle(x,y,1.8,'#ffffff','#b7c4ca',.1)
     x,y=CONTROLS['RUN_STOP']
     gap_bottom=y+4.125;gap_top=CONTROLS['LED_RUN'][1]-2.45
     # Centre the capital letters in the free gap, not their baseline.
     panel.text('RUN / STOP',x,(gap_bottom+gap_top)/2-3*.718/2,3,INK,True)
-    panel.rect(x-3.9,y-3.9,7.8,7.8,None,GREEN,.45,DATA['parameters']['button_corner_radius_mm']+.4)
+    panel.rect(x-3.9,y-3.9,7.8,7.8,None,RED,.45,DATA['parameters']['button_corner_radius_mm']+.4)
     panel.rect(x-3.5,y-3.5,7,7,'#ffffff','#b7c4ca',.1,DATA['parameters']['button_corner_radius_mm'])
     panel.text('HOLD:',x,5.7,1.9,HINT);panel.text('FORCE TRIG',x,3.1,1.9,HINT)
     return panel
