@@ -22,6 +22,10 @@ Add-Type -Path $api
 $references = @($api, ([Console].Assembly.Location), ([Security.Cryptography.SHA256].Assembly.Location)) | Select-Object -Unique
 Add-Type -ReferencedAssemblies $references -TypeDefinition (Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot 'SolidWorksCase.cs'))
 [SolidWorksCase]::Build($root, $Templates, $Only, $Force.IsPresent)
+if ($Only -eq '' -or $Only -in @('front','rear','power_cap','kickstand')) {
+    [SolidWorksCase]::ExportPrintMeshes($root, $Only, '', 5)
+    Invoke-CasePython $Python 'export_meshes.py'
+}
 if ($Only -eq '') {
     Invoke-CasePython $Python 'build_glass_dxf.py'
     Invoke-CasePython $Python 'verify_case.py'
@@ -39,7 +43,7 @@ if ($Only -eq '') {
         }
         Remove-Item -LiteralPath $target
     }
-    foreach ($relative in @('panel','src/__pycache__')) {
+    foreach ($relative in @('panel','src/__pycache__','output/.native-mesh')) {
         $target = [IO.Path]::GetFullPath((Join-Path $root $relative))
         if (-not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
             throw ('Cleanup directory is outside enclosure: ' + $target)

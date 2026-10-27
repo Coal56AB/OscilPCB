@@ -47,8 +47,13 @@ public static class SolidWorksCase
             input.Append("|"+BuilderDigest(root,new[]{"Reference","Save"}));
             input.Append("|"+TextDigest(File.ReadAllText(Path.Combine(root,"src",name+".fingerprint"))));
         } else {
-            input.Append("|"+BuilderDigest(root,new[]{"M","Line","SpatialLoop","LoopX","Loop","Loft","Part","Save"}));
+            input.Append("|"+BuilderDigest(root,new[]{"M","Line","SpatialLoop","LoopX","Loop","Loft","ImportedUnion","UnionBodies","Part","Save","HideConstruction"}));
             input.Append("|"+TextDigest(File.ReadAllText(Path.Combine(root,"src",name+".plan"))));
+            foreach(string row in File.ReadAllLines(Path.Combine(root,"src",name+".plan"))) {
+                var fields=row.Split('\t');
+                if(fields.Length>1 && (fields[0]=="ADD_GUSSET" || fields[0]=="ADD_CORNER"))
+                    input.Append("|"+TextDigest(File.ReadAllText(Path.Combine(root,"src",fields[1]+".fingerprint"))));
+            }
             if(name=="panel_overlay")input.Append("|"+BuilderDigest(root,new[]{"PanelDecal"})+"|"+FileDigest(Path.Combine(root,"output","panel.png")));
         }
         return TextDigest(input.ToString());
@@ -73,8 +78,11 @@ public static class SolidWorksCase
             app.ActivateDoc3(doc.GetTitle(),false,0,ref e);
             doc.ClearSelection2(true);
             Save(doc,Path.Combine(root,"output",name+".step"));
-            if(name!="rear_glass" && name!="panel_overlay" && !File.Exists(Path.Combine(root,"output",name+".stl")))
-                Save(doc,Path.Combine(root,"output",name+".stl"));
+            // Export can dirty the native document or its add-in data even
+            // when its geometry did not change. Save silently before CloseDoc.
+            int saveError=0,saveWarning=0;
+            if(!doc.Save3(1,ref saveError,ref saveWarning) || saveError!=0)
+                throw new Exception("Cannot save after export "+name+": "+saveError);
         }
         Console.WriteLine("UNCHANGED / "+name);
         if(type==1)app.CloseDoc(doc.GetTitle());
@@ -87,7 +95,15 @@ public static class SolidWorksCase
     static void SpatialLoop(SketchManager sm,string value,Func<double,double,double[]> map) {
         Action<double,double,double,double> line=(x,y,u,v)=>{var a=map(x,y);var b=map(u,v);sm.CreateLine(a[0],a[1],a[2],b[0],b[1],b[2]);};
         Action<double,double,double,double,double,double> arc=(x,y,u,v,p,q)=>{var a=map(x,y);var b=map(u,v);var c=map(p,q);if(sm.Create3PointArc(a[0],a[1],a[2],c[0],c[1],c[2],b[0],b[1],b[2])==null)throw new Exception("Cannot create profile arc");};
-        var t=value.Split(',');var d=Array.ConvertAll(t,q=>q=="P"||q=="R"?0:M(q));
+        var t=value.Split(',');var d=Array.ConvertAll(t,q=>q=="P"||q=="R"||q=="F"?0:M(q));
+        if(t[0]=="F") {
+            for(int i=1;i<t.Length;i+=6) {
+                int j=i+6<t.Length?i+6:1;
+                arc(d[i],d[i+1],d[i+2],d[i+3],d[i+4],d[i+5]);
+                line(d[i+4],d[i+5],d[j],d[j+1]);
+            }
+            return;
+        }
         if(t[0]=="P") {for(int i=1;i<t.Length;i+=2){int j=i+2<t.Length?i+2:1;line(d[i],d[i+1],d[j],d[j+1]);}return;}
         if(t[0]!="R")throw new Exception("Unsupported spatial profile "+t[0]);
         double x0=d[1],y0=d[2],w=d[3],h=d[4],r=d[5],k=Math.Sqrt(.5);
@@ -154,20 +170,48 @@ public static class SolidWorksCase
     }
     static void Save(ModelDoc2 doc, string path) {
         int e=0,w=0;
-        bool mesh=Path.GetExtension(path).Equals(".stl",StringComparison.OrdinalIgnoreCase);
-        int quality=app.GetUserPreferenceIntegerValue(78);
+        if(!doc.Extension.SaveAs(path,0,1,null,ref e,ref w) || e!=0)
+            throw new Exception("Save failed: "+path+" errors="+e+" warnings="+w);
+    }
+    public static void ExportPrintMeshes(string root,string only,string outputDirectory,double angleDegrees=5) {
+        if(app==null)throw new Exception("SolidWorks build session is not connected");
+        if(string.IsNullOrEmpty(outputDirectory))outputDirectory=Path.Combine(root,"output",".native-mesh");
+        Directory.CreateDirectory(outputDirectory);
+        int quality=app.GetUserPreferenceIntegerValue(78),units=app.GetUserPreferenceIntegerValue(211);
         double deviation=app.GetUserPreferenceDoubleValue(2),angle=app.GetUserPreferenceDoubleValue(3);
+        int[] toggles={69,70,71,72,73,191};var original=new bool[toggles.Length];
+        for(int i=0;i<toggles.Length;i++)original[i]=app.GetUserPreferenceToggle(toggles[i]);
+        var active=(ModelDoc2)app.IActiveDoc2;string activeTitle=active==null?null:active.GetTitle();
         try {
-            if(mesh) {
-                app.SetUserPreferenceIntegerValue(78,3); // STL custom quality
-                app.SetUserPreferenceDoubleValue(2,.00001); // 0.01 mm chord tolerance
-                app.SetUserPreferenceDoubleValue(3,Math.PI/90); // 2 degrees
+            app.SetUserPreferenceIntegerValue(78,3);app.SetUserPreferenceIntegerValue(211,0);
+            app.SetUserPreferenceDoubleValue(2,.00001);app.SetUserPreferenceDoubleValue(3,angleDegrees*Math.PI/180);
+            bool[] values={true,false,true,true,false,false};
+            for(int i=0;i<toggles.Length;i++)app.SetUserPreferenceToggle(toggles[i],values[i]);
+            foreach(string name in new[]{"front","rear","power_cap","kickstand"}) {
+                if(!string.IsNullOrEmpty(only) && only!=name)continue;
+                string path=Path.Combine(root,name+".SLDPRT");int e=0,w=0;
+                var doc=(ModelDoc2)app.GetOpenDocumentByName(path);bool visible=doc!=null&&doc.Visible;
+                if(doc==null)doc=(ModelDoc2)app.OpenDoc6(path,1,1,"",ref e,ref w);
+                if(doc==null)throw new Exception("Cannot export print mesh "+name+": "+e);
+                app.ActivateDoc3(doc.GetTitle(),false,0,ref e);doc.ClearSelection2(true);
+                Save(doc,Path.Combine(outputDirectory,name+".stl"));
+                if(!doc.Save3(1,ref e,ref w)||e!=0)throw new Exception("Cannot save after STL export "+name);
+                if(!visible)app.CloseDoc(doc.GetTitle());
+                Console.WriteLine("NATIVE STL / "+name);
             }
-            if(!doc.Extension.SaveAs(path,0,1,null,ref e,ref w) || e!=0)
-                throw new Exception("Save failed: "+path+" errors="+e+" warnings="+w);
         } finally {
-            if(mesh) {app.SetUserPreferenceIntegerValue(78,quality);app.SetUserPreferenceDoubleValue(2,deviation);app.SetUserPreferenceDoubleValue(3,angle);}
+            app.SetUserPreferenceIntegerValue(78,quality);app.SetUserPreferenceIntegerValue(211,units);
+            app.SetUserPreferenceDoubleValue(2,deviation);app.SetUserPreferenceDoubleValue(3,angle);
+            for(int i=0;i<toggles.Length;i++)app.SetUserPreferenceToggle(toggles[i],original[i]);
+            if(activeTitle!=null){int e=0;app.ActivateDoc3(activeTitle,false,0,ref e);}
         }
+    }
+    static void HideConstruction(ModelDoc2 doc) {
+        doc.ClearSelection2(true);
+        for(var f=(Feature)doc.FirstFeature();f!=null;f=(Feature)f.GetNextFeature())
+            if(f.GetTypeName2()=="RefPlane")f.Select2(true,0);
+        doc.BlankRefGeom();
+        doc.ClearSelection2(true);
     }
     static void PanelDecal(ModelDoc2 doc,string root) {
         Face2 face=null;double top=double.MinValue;
@@ -189,12 +233,13 @@ public static class SolidWorksCase
         doc.GraphicsRedraw2();
         Console.WriteLine("Film artwork decal / "+doc.Extension.GetDecalsCount());
     }
-    static Feature Loft(ModelDoc2 doc,string name,double lo,double hi,string[] loops,bool axisX,bool add) {
-        var profiles=new Feature[2];
-        for(int k=0;k<2;k++) {
+    static Feature Loft(ModelDoc2 doc,string name,double lo,double hi,string[] loops,bool axisX,bool add,bool rootBlend=false) {
+        var profiles=new Feature[loops.Length];
+        for(int k=0;k<loops.Length;k++) {
             Feature basePlane=null;int planeIndex=0;
             for(var f=(Feature)doc.FirstFeature();f!=null;f=(Feature)f.GetNextFeature())if(f.GetTypeName2()=="RefPlane" && ++planeIndex==(axisX?3:1)){basePlane=f;break;}
-            double x=k==0?lo:hi;
+            double t=(double)k/(loops.Length-1);
+            double x=lo+(hi-lo)*(rootBlend?Math.Sin(t*Math.PI/2):t);
             doc.ClearSelection2(true);basePlane.Select2(false,0);
             var plane=(RefPlane)doc.FeatureManager.InsertRefPlane(8|(x<0?256:0),Math.Abs(x),0,0,0,0);
             if(plane==null)throw new Exception("Cannot create loft plane");
@@ -215,6 +260,42 @@ public static class SolidWorksCase
         foreach(var p in profiles)p.Select2(true,1);
         if(add)return doc.FeatureManager.InsertProtrusionBlend2(false,false,false,1,0,0,0,0,false,false,false,0,0,0,true,true,true,0);
         return doc.FeatureManager.InsertCutBlend(false,false,false,0,0,0,false,0,0,0,true,true);
+    }
+    static Feature ImportedUnion(ModelDoc2 target,string file,string name) {
+        var existing=(Feature)((PartDoc)target).FeatureByName(name+"_solid");
+        if(existing!=null)return UnionBodies(target);
+        Body2 copy=null;ModelDoc2 imported=null;
+        app.DocumentVisible(false,1);
+        try {
+            int error=0;
+            imported=(ModelDoc2)app.LoadFile4(file,"r",null,ref error);
+            if(imported==null)throw new Exception("Cannot import gusset "+file+": "+error);
+            var bodies=(object[])((PartDoc)imported).GetBodies2(0,false);
+            if(bodies==null || bodies.Length!=1)throw new Exception("Expected one gusset solid "+name);
+            copy=(Body2)((Body2)bodies[0]).Copy();
+        } finally {
+            if(imported!=null)app.CloseDoc(imported.GetTitle());
+            app.DocumentVisible(true,1);
+        }
+        int activation=0;app.ActivateDoc3(target.GetTitle(),false,0,ref activation);
+        var parent=(Body2)((object[])((PartDoc)target).GetBodies2(0,false))[0];
+        var inserted=(Feature)((PartDoc)target).CreateFeatureFromBody3(copy,false,0);
+        if(inserted==null)throw new Exception("Cannot embed gusset "+name);
+        inserted.Name=name+"_solid";
+        var faces=(object[])inserted.GetFaces();
+        Body2 tool=faces==null?null:(Body2)((Face2)faces[0]).GetBody();
+        if(tool==null)throw new Exception("Embedded gusset body missing "+name);
+        target.ClearSelection2(true);
+        return UnionBodies(target);
+    }
+    static Feature UnionBodies(ModelDoc2 target) {
+        target.SetAddToDB(false);target.ClearSelection2(true);
+        foreach(Body2 body in (object[])((PartDoc)target).GetBodies2(0,false)) {
+            if(!target.Extension.SelectByID2(body.Name,"SOLIDBODY",0,0,0,true,2,null,0))
+                throw new Exception("Cannot select body for union "+body.Name);
+        }
+        var feature=target.FeatureManager.InsertCombineFeature(15903,null,null);
+        target.SetAddToDB(true);return feature;
     }
     static void Part(string root,string name) {
         string signature=InputSignature(root,name);
@@ -239,6 +320,11 @@ public static class SolidWorksCase
             if(string.IsNullOrWhiteSpace(row))continue;
             var f=row.Split('\t');
             double lo=M(f[2]),hi=M(f[3]);
+            if(f[0]=="ADD_GUSSET" || f[0]=="ADD_CORNER") {
+                var gusset=ImportedUnion(doc,Path.Combine(root,"src",f[1]+".step"),f[1]);
+                if(gusset==null)throw new Exception("Cannot join gusset "+f[1]);
+                gusset.Name=f[1];Console.WriteLine(name+" / "+f[1]);continue;
+            }
             if(f[0]=="FILLET") {
                 doc.ClearSelection2(true);var targets=f[4].Split(';');
                 var edges=new Edge[0];
@@ -265,8 +351,8 @@ public static class SolidWorksCase
                 var round=(Feature)doc.FeatureManager.FeatureFillet3(3,lo,0,0,0,0,0,null,null,null,null,null,null,null);
                 if(round==null)throw new Exception("Fillet failed "+f[1]);round.Name=f[1];Console.WriteLine(name+" / "+f[1]);continue;
             }
-            if(f[0].EndsWith("_LOFT")) {
-                var cut=Loft(doc,f[1],lo,hi,f[4].Split(';'),f[0].Contains("_X"),f[0].StartsWith("ADD"));
+            if(f[0].EndsWith("_LOFT") || f[0].EndsWith("_BLEND")) {
+                var cut=Loft(doc,f[1],lo,hi,f[4].Split(';'),f[0].Contains("_X"),f[0].StartsWith("ADD"),f[0].EndsWith("_BLEND"));
                 if(cut==null)throw new Exception(name+": loft failed: "+f[1]);
                 cut.Name=f[1];Console.WriteLine(name+" / "+f[1]);continue;
             }
@@ -313,6 +399,7 @@ public static class SolidWorksCase
             ?new double[]{.18,.65,.72,.2,.8,.25,.3,0,0}
             :new double[]{.12,.18,.22,.2,.8,.25,.3,0,0};
         if(name=="panel_overlay")PanelDecal(doc,root);
+        HideConstruction(doc);
         doc.ShowNamedView2("",7);doc.ViewZoomtofit2();
         // A restored or reopened assembly can reload the old target while the
         // replacement is being built. Release that reference before overwriting.
@@ -323,7 +410,9 @@ public static class SolidWorksCase
         Remember(doc,signature);
         Save(doc,Path.Combine(root,name+".SLDPRT"));
         Save(doc,Path.Combine(root,"output",name+".step"));
-        if(name!="rear_glass" && name!="panel_overlay")Save(doc,Path.Combine(root,"output",name+".stl"));
+        int saveError=0,saveWarning=0;
+        if(!doc.Save3(1,ref saveError,ref saveWarning) || saveError!=0)
+            throw new Exception("Cannot save native part after export "+name+": "+saveError);
         } finally {doc.SetAddToDB(false);app.CloseDoc(doc.GetTitle());}
     }
     static void Reference(string root,string name) {

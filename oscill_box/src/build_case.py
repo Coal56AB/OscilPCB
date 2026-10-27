@@ -11,6 +11,7 @@ import math
 import tempfile
 from pathlib import Path
 from hashlib import sha256
+from functools import lru_cache
 
 from altium_monkey import AltiumPcbDoc, AltiumPcbLib
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse, BRepAlgoAPI_Common
@@ -22,7 +23,7 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopAbs import TopAbs_EDGE
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_SOLID
 from OCP.TopoDS import TopoDS
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.BRepBndLib import BRepBndLib
@@ -31,6 +32,10 @@ from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 from OCP.gp import gp_Pnt, gp_Vec, gp_Trsf
 
+# OCP releases expose TopoDS casts with or without the static-method suffix.
+for _cast in dir(TopoDS):
+    if _cast.endswith('_s') and not hasattr(TopoDS,_cast[:-2]):
+        setattr(TopoDS,_cast[:-2],getattr(TopoDS,_cast))
 ROOT=Path(__file__).resolve().parents[1]
 PCB=ROOT.parent
 import sys
@@ -41,7 +46,7 @@ from _build_mechanical_models import box, cylinder, tube, compound, read_solids,
 
 def bbox(shape):
     b=Bnd_Box();BRepBndLib.AddOptimal_s(shape,b,False,False)
-    return (b.GetXMin(),b.GetYMin(),b.GetZMin(),b.GetXMax(),b.GetYMax(),b.GetZMax())
+    return b.Get()
 
 U=.00000254
 PARAM=json.loads((ROOT/'src/parameters.json').read_text())
@@ -68,6 +73,9 @@ def write_model(path,parts):
     shapes=XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     colors=XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
     fingerprint=sha256()
+    # One flat multibody part, rather than one assembly component per body.
+    # SOLIDWORKS otherwise creates hundreds of transient SOLID-n documents.
+    root_label=shapes.AddShape(compound([s for s,_ in parts]),False) if len(parts)>1 else None
     for s,c in parts:
         # XCAF STEP presentation ordering and occurrence IDs are not stable.
         # Hash exact BRep geometry (without meshing) and its assigned colour.
@@ -76,12 +84,12 @@ def write_model(path,parts):
         raw=stream.getvalue()
         fingerprint.update(len(raw).to_bytes(8,'little'));fingerprint.update(raw)
         fingerprint.update(json.dumps(c).encode())
-        label=shapes.AddShape(s)
+        label=shapes.AddSubShape(root_label,s) if root_label is not None else shapes.AddShape(s,False)
         colors.SetColor(label,Quantity_Color(*(v/255 for v in c),Quantity_TOC_RGB),XCAFDoc_ColorGen)
     writer=STEPCAFControl_Writer();writer.SetColorMode(True);writer.Transfer(doc,STEPControl_AsIs)
     if writer.Write(str(path))!=IFSelect_RetDone:raise ValueError('STEP write failed '+str(path))
     if not read_solids(path):raise ValueError('Empty STEP '+str(path))
-    if path.parent==ROOT/'src' and path.stem.endswith('_reference'):
+    if path.parent==ROOT/'src' and (path.stem.endswith('_reference') or path.stem.startswith(('Pillar_blended_mount_','Rear_corner_blend_'))):
         path.with_suffix('.fingerprint').write_text(fingerprint.hexdigest()+'\n')
 
 
@@ -116,6 +124,7 @@ def R(x,y,w,h,r=0):return encode('R',x,y,w,h,r)
 def C(x,y,r):return encode('C',x,y,r)
 def P(points):return encode('P',*[v for p in points for v in p])
 def UPPER(x,y,w,h,r):return encode('U',x,y,w,h,r)
+def LOWER(x,y,w,h,r):return UPPER(x+w,y+h,-w,-h,-r)
 def chamfer_rect(y,z,w,h,c):
     return P([(y+c,z),(y+w-c,z),(y+w,z+c),(y+w,z+h-c),
               (y+w-c,z+h),(y+c,z+h),(y,z+h-c),(y,z+c)])
@@ -210,6 +219,17 @@ def rear_levels():
     return inner,glass_bottom-.1,glass_bottom,glass_top
 
 
+def usb_c_centre():
+    return PARAM['charger_origin_y_mm']-15,PARAM['charger_board_top_mm']+1.73
+
+
+def charger_mounts():
+    # The two PCBs have nominal Ø3 holes. M2 screws fit both with their axes
+    # halfway between the holes after aligning J8 with P1 (0.51 mm offset).
+    shift=(PARAM['charger_origin_y_mm']-78.9)/2
+    return [(x,y+shift) for x,y in ((167.5,51.4),(187.5,51.4),(167.5,76.4),(187.5,76.4))]
+
+
 def build_stand():
     cy,cz=PARAM['stand_hinge_y_mm'],PARAM['stand_hinge_z_mm']
     extra=PARAM['lower_extension_mm']
@@ -252,6 +272,8 @@ def shape_of(loop,z0,z1):
     if a[0]=='C':return cylinder(*v[:2],z0,z1,v[2])
     if a[0]=='U':
         x,y,w,h,r=v
+        if w<0 and h<0 and r<0:
+            return transform(shape_of(UPPER(0,0,-w,-h,-r),z0,z1),[-1,0,0,x,0,-1,0,y,0,0,1,0])
         shape=box(x,y,z0,x+w,y+h-r,z1)
         shape=BRepAlgoAPI_Fuse(shape,box(x+r,y+h-r,z0,x+w-r,y+h,z1)).Shape()
         for cx in (x+r,x+w-r):
@@ -264,10 +286,66 @@ def feature(part,kind,name,z0,z1,*loops):
     FEATURES.setdefault(part,[]).append((kind,name,z0,z1,loops))
 
 
+@lru_cache(maxsize=8)
+def curved_gusset(loop,bottom,top):
+    x,y,dx,dy,reach,width,root_radius,crest_radius=map(float,loop.split(',')[1:])
+    root=top-.1
+    # Build and finish an ordinary boss/rib/plate junction before trimming the
+    # disposable construction plate. Round the crests FIRST, then the complete
+    # concave junction network; reversing that order leaves failed crest ends.
+    solid=BRepAlgoAPI_Fuse(box(-24,-24,root,24,24,root+1),cylinder(0,0,0,root,4.2)).Shape()
+    for side,(vx,vy) in enumerate(((1,0),(0,1),(-1,0),(0,-1))):
+        length=reach if side==0 else PARAM['mount_brace_reach_mm']
+        wire=BRepBuilderAPI_MakePolygon()
+        for u,z in ((2.5,bottom),(length,root),(2.5,root)):
+            wire.Add(gp_Pnt(vx*u+vy*width/2,vy*u-vx*width/2,z))
+        wire.Close()
+        web=BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire.Wire()).Face(),gp_Vec(-vy*width,vx*width,0)).Shape()
+        solid=BRepAlgoAPI_Fuse(solid,web).Shape()
+    unify=ShapeUpgrade_UnifySameDomain(solid,True,True,True);unify.Build();solid=unify.Shape()
+    from OCP.GeomAbs import GeomAbs_Line
+    for finish in ('crest','root'):
+        fillet=BRepFilletAPI_MakeFillet(solid);edges=[];ex=TopExp_Explorer(solid,TopAbs_EDGE)
+        while ex.More():
+            e=TopoDS.Edge(ex.Current());q=bbox(e);c=BRepAdaptor_Curve(e)
+            point=c.Value((c.FirstParameter()+c.LastParameter())/2);radial=math.hypot(point.X(),point.Y())
+            selected=(c.GetType()==GeomAbs_Line and q[5]-q[2]>2 and q[3]-q[0]+q[4]-q[1]>1 and radial>4.21) if finish=='crest' else (
+                (abs(q[2]-root)<1e-5 and abs(q[5]-root)<1e-5 and radial<20) or
+                (q[5]-q[2]>1 and abs(radial-4.2)<1e-4))
+            if selected and not any(e.IsSame(old) for old in edges):
+                edges.append(e);fillet.Add(crest_radius if finish=='crest' else root_radius,e)
+            ex.Next()
+        fillet.Build()
+        if not fillet.IsDone() or not BRepCheck_Analyzer(fillet.Shape()).IsValid():
+            raise ValueError('Cannot finish '+finish+' of mount '+loop)
+        solid=fillet.Shape()
+    # The construction plate is not part of the enclosure. Keeping the exact
+    # planar foot at root lets the finished ribs merge with the existing panel.
+    solid=BRepAlgoAPI_Cut(solid,box(-25,-25,root,25,25,root+2)).Shape()
+    solid=BRepAlgoAPI_Cut(solid,cylinder(0,0,-.1,PARAM['m3_insert_depth_mm'],PARAM['m3_insert_hole_mm']/2)).Shape()
+    from OCP.GeomAbs import GeomAbs_Circle
+    entrance=BRepFilletAPI_MakeFillet(solid);ex=TopExp_Explorer(solid,TopAbs_EDGE);edges=[]
+    while ex.More():
+        e=TopoDS.Edge(ex.Current());c=BRepAdaptor_Curve(e);q=bbox(e)
+        if c.GetType()==GeomAbs_Circle and abs(c.Circle().Radius()-PARAM['m3_insert_hole_mm']/2)<1e-5 and abs(q[2])<1e-5 and abs(q[5])<1e-5:
+            if not any(e.IsSame(old) for old in edges):edges.append(e);entrance.Add(.2,e)
+        ex.Next()
+    entrance.Build()
+    if not entrance.IsDone():raise ValueError('Cannot round mount insert entrance '+loop)
+    solid=entrance.Shape()
+    if not BRepCheck_Analyzer(solid).IsValid():raise ValueError('Invalid finished mount '+loop)
+    return transform(solid,[dx,-dy,0,x,dy,dx,0,y,0,0,1,0])
+
+
 def feature_tool(kind,loops,lo,hi):
-    if kind.endswith('_LOFT'):
-        loft=BRepOffsetAPI_ThruSections(True,True)
-        for x,loop in zip((lo,hi),loops):
+    if kind=='ADD_GUSSET':return curved_gusset(loops[0],lo,hi)
+    if kind=='ADD_CORNER':return BRepAlgoAPI_Cut(shape_of(loops[0],lo,hi),shape_of(loops[1],lo-.1,hi+.1)).Shape()
+    if kind.endswith(('_LOFT','_BLEND')):
+        blend=kind.endswith('_BLEND')
+        loft=BRepOffsetAPI_ThruSections(True,not blend)
+        for i,loop in enumerate(loops):
+            t=i/(len(loops)-1)
+            x=lo+(hi-lo)*(math.sin(t*math.pi/2) if blend else t)
             loft.AddWire(section_wire(loop,x,'_X' in kind))
         loft.Build();return loft.Shape()
     if kind in ('CUT_X_TAPER','CUT_Z_TAPER'):
@@ -536,6 +614,8 @@ def layout_and_plans(board):
         a,b=wall_front[i:i+2]
         feature('front','ADD','Continuous_encoder_wall_'+str(i),panel_top-.1,bezel_top,
                 P([a,b,(b[0],b[1]+2),(a[0],a[1]+2)]))
+    # Blend the uninterrupted outside rim before cutting the thin film pocket.
+    feature('front','FILLET','Outer_control_panel_round',PARAM['control_panel_edge_radius_mm'],panel_top,'deck')
     # The actual PCB edge between its ears is Y=45.09, beyond this wall.
     # A rectangular bounding-box cut would create an unnecessary visible slot.
     sx,sy,sw,sh,_=data['screen_window']
@@ -601,9 +681,9 @@ def layout_and_plans(board):
         feature('rear','CUT','PCB_M3_through_'+str(i),rear_outer-.1,rear_inner+.1,C(x,y,1.7))
     feature('rear','CUT','Rear_glass_seat',rear_outer-.1,glass_top,R(-3.25,-3.25-extra,196.5,166.5+extra,3.25))
     # Continuous vertical support from the rear frame to the clear PCB edge.
-    support_y=-gap-extra+.2;support_end=1.5
+    support_y=-gap-extra;support_end=1.5
     feature('rear','ADD','PCB_lower_edge_web',glass_top,-1.6,
-            R(-.5,support_y,191,support_end-support_y))
+            LOWER(-gap,support_y,190+2*gap,support_end-support_y,gap))
     feature('rear','FILLET','PCB_support_root_round',1,-1.6,'support')
     feature('rear_glass','ADD','Acrylic_2mm',glass_bottom,glass_top,R(-3,-3-extra,196,166+extra,3))
     for i,x in enumerate((-6,179.2)):
@@ -630,16 +710,17 @@ def layout_and_plans(board):
     # Charger is in FRONT of the main PCB, on four separate 6 mm spacers.
     # Front shell section: 8.94 x 3.16 mm, corner R1.28. The rear mounting
     # flange is larger and lower; it must not set the visible opening.
-    usb_throat=R(58.93,7.25,9.94,4.16,1.78)
+    usb_y,usb_z=usb_c_centre()
+    usb_throat=R(usb_y-4.97,usb_z-2.08,9.94,4.16,1.78)
     # Owner widened the short axis of the OUTER pocket for the plug body.
     # The receptacle throat keeps its independent 0.5 mm perimeter gap.
     usb_h=10.8;usb_r=2.4
     usb_funnel_start=191.1+PARAM['usb_c_lip_mm']
     feature('front','ADD_X','USB_C_inner_collar',191,193.2,
-            R(56.43,4.75,14.94,9.16,3.2))
+            R(usb_y-7.47,usb_z-4.58,14.94,9.16,3.2))
     feature('front','CUT_X','USB_C_throat',190.9,usb_funnel_start+.1,usb_throat)
     feature('front','CUT_X_LOFT','USB_C_funnel',usb_funnel_start,195.8,
-            usb_throat,R(55.5,9.33-usb_h/2,16.8,usb_h,usb_r))
+            usb_throat,R(usb_y-8.4,usb_z-usb_h/2,16.8,usb_h,usb_r))
     for i,y in enumerate(range(78,109,5)):
         feature('front','CUT_X','Air_intake_'+str(i),192.8,196.2,chamfer_rect(y-1.2,5,2.4,17,.8))
     for i,y in enumerate(range(72,118,5)):
@@ -673,10 +754,61 @@ def layout_and_plans(board):
     build_stand()
     feature('front','FILLET','Wall_transition_round',5,0,'wall')
     feature('front','FILLET','Outer_front_round',5,bezel_top,'outer')
+    feature('front','FILLET','Side_wall_end_round',PARAM['wall_end_radius_mm'],0,'wall_ends')
+    brace_start=len(FEATURES['front'])
+    for i,(x,y) in enumerate(case_screws):
+        dx=(-2.5 if x<95 else 192.5)-x
+        dy=(-2.5-extra if y<80 else 162.5)-y
+        reach=math.hypot(dx,dy)
+        top=(panel_bottom if y<80 else bezel_bottom)+.1
+        feature('front','ADD_GUSSET',f'Pillar_blended_mount_{i}',PARAM['mount_brace_bottom_mm'],top,
+                encode('G',x,y,dx/reach,dy/reach,reach,PARAM['mount_brace_width_mm'],
+                       PARAM['mount_brace_root_radius_mm'],PARAM['mount_brace_crest_radius_mm']))
+    # Test each solid separately. A compound of overlapping webs and their
+    # flares is not a valid Boolean argument and can hide an obstructed bore.
+    braces=[]
+    for kind,_,lo,hi,loops in FEATURES['front'][brace_start:]:
+        shape=feature_tool(kind,loops,lo,hi);braces.append((shape,bbox(shape)))
+    for kind,title,lo,hi,loops in FEATURES['front'][:brace_start]:
+        if not title.startswith(('Input_','BNC_base_passage_','BNC_bayonet_passage_','Button_','Shaft_','Run_LED')):continue
+        opening=feature_tool(kind,loops,lo,hi);b=bbox(opening)
+        for shape,a in braces:
+            if not all(a[k+3]>b[k]+1e-6 and b[k+3]>a[k]+1e-6 for k in range(3)):continue
+            common=BRepAlgoAPI_Common(shape,opening)
+            if not common.IsDone():raise ValueError('Cannot check brace clearance '+title)
+            if volume(common.Shape())>.001:
+                feature('front',kind,'Brace_clearance_'+title,lo,hi,*loops);break
+    # The RUN/STOP adapter PCB is wider than its actuator opening. Its stack
+    # occupies 10.6..12.2 mm (PCB) and 12.2..14.5 mm (switch housing), as in
+    # Lib/_tactile_stack.py. Clear the new rib below the unchanged panel opening.
+    rx,ry=controls['RUN_STOP']
+    feature('front','CUT','Brace_clearance_RUN_STOP_adapter',10.3,12.5,
+            R(rx-5.1,ry-5.4,10.2,10.8,.3))
+    feature('front','CUT','Brace_clearance_RUN_STOP_housing',11.9,panel_bottom-.2,
+            R(rx-3.5,ry-3.5,7,7,PARAM['button_corner_radius_mm']))
+    feature('front','FILLET','Bezel_free_edge_round',.4,0,'window_edges')
     feature('rear','FILLET','Outer_rear_round',2,rear_outer,'outer')
+    for i,(x,y) in enumerate(case_screws):
+        # A continuous rounded corner joins both walls over their height. It
+        # does not run from a screw boss as a separate diagonal strut.
+        radius=PARAM['rear_corner_radius_mm'];overlap=1
+        sx=1 if x<95 else -1;sy=1 if y<80 else -1
+        cx=-gap if sx>0 else 190+gap
+        cy=-gap-extra if sy>0 else 160+gap
+        x0,x1=sorted((cx-sx*overlap,cx+sx*radius))
+        y0,y1=sorted((cy-sy*overlap,cy+sy*radius))
+        feature('rear','ADD_CORNER',f'Rear_corner_blend_{i}',rear_inner,PARAM['rear_brace_top_mm'],
+                R(x0,y0,x1-x0,y1-y0),C(cx+sx*radius,cy+sy*radius,radius))
+    # The lower corner reliefs overlap the pre-existing board support in XY.
+    # Restore that complete web from its single original definition.
+    support=next(f for f in FEATURES['rear'] if f[1]=='PCB_lower_edge_web')
+    feature('rear',support[0],'PCB_support_edge_finish',support[2],support[3],*support[4])
     feature('kickstand','FILLET','Stand_leg_root_round',3,0,'stand_inside')
     feature('kickstand','FILLET','Pivot_neck_root_round',1,rear_outer-.4,'stand_necks')
     feature('kickstand','FILLET','Stand_contact_round',2,rear_outer-.4-5.6,'all')
+    feature('kickstand','FILLET','Stand_front_edge_round',.5,rear_outer-.4,'stand_front_edges')
+    feature('power_cap','FILLET','Thumb_pad_edge_round',.25,5,'thumb_pad_edges')
+    feature('power_cap','FILLET','Thumb_rib_crown_round',.15,5.4,'thumb_crowns')
     return data
 
 
@@ -688,10 +820,10 @@ def build_reference(board):
     write_model(ROOT/'src/pcb_reference.step',parts)
     charger=read_solids(PCB/'Lib/J5019_HW357_Mechanical.step')
     # Proper 180-degree planar rotation: components toward LCD, USB-C right.
-    matrix=[-1,0,0,190,0,-1,0,78.9,0,0,1,PARAM['charger_board_top_mm']]
+    matrix=[-1,0,0,190,0,-1,0,PARAM['charger_origin_y_mm'],0,0,1,PARAM['charger_board_top_mm']]
     parts=[(transform(s,matrix),(38,101,61)) for s in charger]
-    for x,y in [(167.5,51.4),(187.5,51.4),(167.5,76.4),(187.5,76.4)]:
-        parts.append((tube(x,y,0,6,3,1.7),METAL))
+    for x,y in charger_mounts():
+        parts.append((tube(x,y,0,PARAM['charger_board_top_mm']-1.6,3,1.1),METAL))
     write_model(ROOT/'src/charger_reference.step',parts)
     data=json.loads((ROOT/'src/layout.json').read_text())
     caps=[]
@@ -703,7 +835,7 @@ def build_reference(board):
     write_model(ROOT/'src/encoder_caps_reference.step',caps)
 
 
-def check_shapes():
+def check_shapes(export_source=False):
     result={}
     for name,features in FEATURES.items():
         solid=None
@@ -718,6 +850,17 @@ def check_shapes():
                     c=BRepAdaptor_Curve(e);p=c.Value((c.FirstParameter()+c.LastParameter())/2)
                     if loops[0]=='wall':
                         selected=q[3]-q[0]<1e-5 and q[4]-q[1]<1e-5 and q[2]<PARAM['panel_top_mm']+.1 and q[5]>28.4 and any(math.dist(q[:2],p)<1e-4 for p in [(55.4,34.2),(65.4,37.3),(161.8,37.3),(171.8,34.2)])
+                    elif loops[0]=='wall_ends':
+                        edge_x=PARAM['pcb_edge_clearance_mm']+PARAM['wall_mm']
+                        selected=q[3]-q[0]<1e-5 and q[4]-q[1]<1e-5 and q[5]-q[2]>3 and abs(q[1]-34.2)<1e-5 and any(abs(q[0]-x)<1e-5 for x in (-edge_x,190+edge_x))
+                    elif loops[0]=='window_edges':
+                        selected=q[0]>10 and q[3]<180 and q[1]>45 and q[4]<152 and q[2]>28.49
+                    elif loops[0]=='stand_front_edges':
+                        selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5 and p.Y()<110
+                    elif loops[0]=='thumb_pad_edges':
+                        selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5 and (abs(p.X())>3.5 or abs(p.Y())>2.8)
+                    elif loops[0]=='thumb_crowns':
+                        selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5
                     elif loops[0]=='ribs':
                         rib_x=[float(f[4][0].split(',')[1])+PARAM['control_rib_width_mm']/2 for f in features if f[1].startswith('Control_rib_vertical_')]
                         along_rib=any(abs(abs(p.X()-x)-1)<1e-5 for x in rib_x)
@@ -744,7 +887,7 @@ def check_shapes():
                     elif loops[0]=='stand_necks':
                         neck_y=PARAM['stand_hinge_y_mm']
                         selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5 and (p.X()<4 or p.X()>186) and (abs(p.Y()-(neck_y-9.6))<1e-5 or abs(p.Y()-neck_y)<1e-5 or abs(p.X()-3.8)<1e-5 or abs(p.X()-186.2)<1e-5)
-                    else:selected=abs(q[2]-hi)<1e-4 and abs(q[5]-hi)<1e-4 and (loops[0]=='all' or q[0]<-5.7 or q[1]<-5.7-PARAM['lower_extension_mm'] or q[3]>195.7 or q[4]>165.7)
+                    else:selected=abs(q[2]-hi)<1e-4 and abs(q[5]-hi)<1e-4 and (loops[0]=='all' or q[0]<-5.7 or q[1]<-5.7-PARAM['lower_extension_mm'] or q[3]>195.7 or q[4]>165.7) and (loops[0]!='deck' or p.Y()<34)
                     if selected:
                         if not any(e.IsSame(old) for old in edges):
                             edges.append(e);fillet.Add(lo,e)
@@ -758,8 +901,14 @@ def check_shapes():
                 lines.append('\t'.join([kind,title,str(lo),str(hi),';'.join(loops)]));continue
             lines.append('\t'.join([kind,title,str(lo),str(hi),';'.join(loops)]))
             tool=feature_tool(kind,loops,lo,hi)
+            if kind in ('ADD_GUSSET','ADD_CORNER'):write_model(ROOT/'src'/(title+'.step'),[(tool,BLUE)])
             solid=tool if solid is None else (BRepAlgoAPI_Fuse if kind.startswith('ADD') else BRepAlgoAPI_Cut)(solid,tool).Shape()
         if not BRepCheck_Analyzer(solid).IsValid():raise ValueError('Invalid '+name)
+        bodies=TopExp_Explorer(solid,TopAbs_SOLID);body_count=0
+        while bodies.More():body_count+=1;bodies.Next()
+        if body_count!=1:raise ValueError(f'{name}: expected one connected solid, got {body_count}')
+        if export_source and name in ('front','rear','power_cap','kickstand'):
+            write_model(ROOT/'output'/(name+'-source.step'),[(solid,BLUE)])
         (ROOT/'src'/f'{name}.plan').write_text('\n'.join(lines)+'\n')
         result[name]={'volume_mm3':volume(solid),'bounds_mm':[round(v,4) for v in bbox(solid)]}
     assert PARAM['panel_top_mm']-PARAM['control_panel_thickness_mm']>=13.5
@@ -774,13 +923,14 @@ def main():
         printer.SetTraceLevel(Message_Gravity.Message_Warning)
     p=argparse.ArgumentParser();p.add_argument('--charger-source',type=Path)
     p.add_argument('--update-controls',action='store_true');p.add_argument('--skip-reference',action='store_true')
+    p.add_argument('--export-check-solids',action='store_true',help='Export the checked source solids separately from native exports')
     a=p.parse_args();(ROOT/'output').mkdir(exist_ok=True)
     if a.update_controls:update_controls()
     if a.charger_source:import_charger(a.charger_source)
     b=AltiumPcbDoc.from_file(PCB/'AnalExtend/AnalExtend.PcbDoc')
     layout_and_plans(b)
     if not a.skip_reference:build_reference(b)
-    check_shapes()
+    check_shapes(a.export_check_solids)
 
 
 if __name__=='__main__':main()

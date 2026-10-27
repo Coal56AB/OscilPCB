@@ -1,13 +1,15 @@
 """Check exported solids, print meshes, controls and the assembled clearances."""
-from collections import Counter
 import json
 import math
 import struct
+import numpy as np
 from pathlib import Path
 from hashlib import sha256
-from build_case import ROOT, PCB, PARAM, FEATURES, layout_and_plans, AltiumPcbDoc, read_solids, compound, volume, bbox, transform, box, cylinder, stand_matrix, feature_tool, P, R, rounded_points, rear_levels
+from build_case import ROOT, PCB, PARAM, FEATURES, layout_and_plans, AltiumPcbDoc, read_solids, compound, volume, bbox, transform, box, cylinder, stand_matrix, feature_tool, loop_segments, P, R, rounded_points, rear_levels, usb_c_centre, charger_mounts
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepGProp import BRepGProp
+from OCP.GProp import GProp_GProps
 
 
 def overlap(a,b):
@@ -18,23 +20,27 @@ def mesh_check(name,shape):
     path=ROOT/'output'/f'{name}.stl'
     raw=path.read_bytes();n=struct.unpack_from('<I',raw,80)[0]
     assert len(raw)==84+50*n,(name,'invalid binary STL')
-    edges=Counter();points=[]
-    for i in range(n):
-        tri=[struct.unpack_from('<3f',raw,84+50*i+j) for j in [12,24,36]]
-        points.extend(tri)
-        tri=[tuple(round(v,5) for v in p) for p in tri]
-        for a,b in zip(tri,tri[1:]+tri[:1]):
-            if a!=b:edges[tuple(sorted([a,b]))]+=1
-    bad=sum(v!=2 for v in edges.values())
-    assert bad==0,(name,'non-manifold STL edges',bad)
+    records=np.frombuffer(raw,dtype=np.dtype([('normal','<f4',(3,)),('vertices','<f4',(3,3)),('attribute','<u2')]),offset=84,count=n)
+    points=records['vertices'].reshape(-1,3)
+    assert np.isfinite(points).all(),(name,'STL contains nonfinite coordinates')
     q=bbox(shape)
     for k in range(3):
-        size=max(p[k] for p in points)-min(p[k] for p in points)
+        size=float(np.max(points[:,k])-np.min(points[:,k]))
         assert abs(size-(q[k+3]-q[k]))<.01,(name,'STL is not in millimetres',k,size)
+    _,vertices=np.unique(np.rint(points.astype(np.float64)*1e5).astype(np.int64),axis=0,return_inverse=True)
+    faces=vertices.reshape(n,3)
+    edges=np.concatenate((faces[:,[0,1]],faces[:,[1,2]],faces[:,[2,0]]))
+    edges.sort(axis=1);edges=edges[edges[:,0]!=edges[:,1]]
+    _,counts=np.unique(edges,axis=0,return_counts=True)
+    bad=int(np.count_nonzero(counts!=2))
+    assert bad==0,(name,'non-manifold STL edges',bad)
     print('PASS',name,': one valid solid;',n,'STL triangles, closed mesh, millimetres')
 
 
-def main():
+def main(geometry_only=False,source_geometry=False):
+    if source_geometry:
+        geometry_only=True
+        print('SOURCE GEOMETRY CHECK: this does not verify native SolidWorks files or print meshes',flush=True)
     data=json.loads((ROOT/'src/layout.json').read_text())
     panel_top=PARAM['panel_top_mm'];panel_bottom=data['panel_inner_z_mm']
     film_bottom,film_top=data['film_z_mm']
@@ -52,13 +58,22 @@ def main():
     expected=json.loads((ROOT/'src/geometry-check.json').read_text())
     shapes={}
     for name in ['front','rear','power_cap','kickstand','rear_glass','panel_overlay']:
-        solids=read_solids(ROOT/'output'/f'{name}.step')
+        suffix='-source' if source_geometry and name in ('front','rear','power_cap','kickstand') else ''
+        solids=read_solids(ROOT/'output'/f'{name}{suffix}.step')
         assert len(solids)==1,(name,'solid count',len(solids))
         s=solids[0];assert BRepCheck_Analyzer(s).IsValid(),name
-        # Parasolid and OpenCascade represent curved loft/fillet faces
-        # differently. 0.1 mm³ is <1.1 ppm of the front shell volume.
-        assert abs(volume(s)-expected[name]['volume_mm3'])<.1,(name,'native feature geometry differs',volume(s)-expected[name]['volume_mm3'])
-        if name in ['front','rear','power_cap','kickstand']:mesh_check(name,s)
+        # STEP and Parasolid split/interpolate the blended faces differently.
+        # Bound the aggregate volume discrepancy by a 0.0001 mm surface
+        # envelope, and separately constrain every overall dimension to 0.001 mm.
+        # Functional openings, seating planes and collisions are checked below.
+        surface=GProp_GProps();BRepGProp.SurfaceProperties_s(s,surface)
+        volume_tolerance=max(.1,surface.Mass()*.0001)
+        delta=volume(s)-expected[name]['volume_mm3']
+        assert abs(delta)<volume_tolerance,(name,'exported volume differs',delta,volume_tolerance)
+        q=bbox(s);bounds_error=max(abs(a-b) for a,b in zip(q,expected[name]['bounds_mm']))
+        assert bounds_error<.001,(name,'exported dimensions differ',bounds_error)
+        print('PASS',name,': bounding error %.6g mm; volume delta %.6g / %.6g mm3'%(bounds_error,delta,volume_tolerance),flush=True)
+        if not geometry_only and name in ['front','rear','power_cap','kickstand']:mesh_check(name,s)
         shapes[name]=s
         assert (ROOT/f'{name}.SLDPRT').is_file()
     led_x,led_y=data['controls']['LED_RUN']
@@ -244,6 +259,48 @@ def main():
         edges.Next()
     assert data['panel_corner_radius_mm']==5 and len(arc_centres)==8,('panel contour must have eight R5 corners',len(arc_centres))
     print('PASS: panel pocket and film share an analytic contour with eight R5 corners')
+    # These patches occupied the former sharp outside rim. Check all three
+    # exposed edges, while the film support is verified over its whole area above.
+    ox,oy,_,right,_,_=data['case_bounds']
+    for probe in (box(95,oy+.1,panel_top-.2,96,oy+.2,panel_top-.1),
+                  box(ox+.1,10,panel_top-.2,ox+.2,11,panel_top-.1),
+                  box(right-.2,10,panel_top-.2,right-.1,11,panel_top-.1)):
+        assert volume(BRepAlgoAPI_Common(shapes['front'],probe).Shape())<.00001,'control deck outside rim is still sharp'
+    for side_x0,side_x1 in ((ox+.05,ox+.15),(right-.15,right-.05)):
+        corner=box(side_x0,34.25,20,side_x1,34.35,20.1)
+        assert volume(BRepAlgoAPI_Common(shapes['front'],corner).Shape())<.00001,'vertical encoder-wall end is still sharp'
+    # Check material in the actual native models, including the deliberate BNC
+    # clearance trimmed from the new front webs, rather than counting features.
+    mount_count=0
+    clearances=[feature_tool(kind,loops,lo,hi) for kind,title,lo,hi,loops in FEATURES['front']
+                if title.startswith(('Input_','BNC_base_passage_','BNC_bayonet_passage_','Button_','Shaft_','Run_LED','Brace_clearance_'))]
+    for kind,title,lo,hi,loops in FEATURES['front']:
+        if kind!='ADD_GUSSET':continue
+        mount=feature_tool(kind,loops,lo,hi)
+        for opening in clearances:mount=BRepAlgoAPI_Cut(mount,opening).Shape()
+        mx,my=map(float,loops[0].split(',')[1:3])
+        mount=BRepAlgoAPI_Cut(mount,cylinder(mx,my,-.1,.21,PARAM['m3_insert_hole_mm']/2+.21)).Shape()
+        missing=volume(BRepAlgoAPI_Cut(mount,shapes['front']).Shape())
+        assert missing<.02,('finished mounting ribs are incomplete',title,missing)
+        # A small point just inside the old triangular crest must be removed
+        # by the large crest round. This catches the former square ridge.
+        x,y,dx,dy,reach,width,_,_=map(float,loops[0].split(',')[1:])
+        u=(4.2+reach)/2;v=width/2-.03
+        z=lo+(hi-.1-lo)*(u-2.5)/(reach-2.5)+.03
+        probe=cylinder(x+dx*u-dy*v,y+dy*u+dx*v,z-.005,z+.005,.005)
+        assert volume(BRepAlgoAPI_Common(probe,shapes['front']).Shape())<1e-7,('mount crest is still sharp',title)
+        mount_count+=1
+    assert mount_count==4,'four finished mounting units are required'
+    for i in range(4):
+        fill=next(f for f in FEATURES['rear'] if f[1]==f'Rear_corner_blend_{i}')
+        kind,title,lo,hi,loops=fill
+        gusset=feature_tool(kind,loops,lo+.01,hi-.01)
+        assert abs(volume(BRepAlgoAPI_Common(gusset,shapes['rear']).Shape())-volume(gusset))<.001,('rear wall corner gusset incomplete',i)
+        assert hi-lo>5,'rear corner gusset must rise above the mounting ear'
+    for x,y in ((5,5),(185,5),(5,155),(185,155)):
+        bore=cylinder(x,y,.01,PARAM['m3_insert_depth_mm']-.01,PARAM['m3_insert_hole_mm']/2-.01)
+        assert volume(BRepAlgoAPI_Common(shapes['front'],bore).Shape())<.001,'mount brace obstructs the M3 insert seat'
+    print('PASS: control deck outside edges rounded; corner/post webs complete; M3 insert seats remain open')
     access=feature_tool('CUT',[R(*data['rear_glass']['keys_access_mm'])],b[2]-.2,b[5]+.2)
     assert volume(BRepAlgoAPI_Common(acrylic,access).Shape())<.001,'key access is closed'
     dxf=(ROOT/'output/rear-glass-cut.dxf').read_text().splitlines();pairs=list(zip(dxf[::2],dxf[1::2]))
@@ -259,7 +316,21 @@ def main():
     assert abs(module_pcbs[0][2]-11.3)<.01 and abs(module_pcbs[0][5]-12.9)<.01,module_pcbs
     charger_pcbs=[b for s,b in assemblies['charger_reference'] if
                   abs(b[3]-b[0]-25)<.01 and abs(b[4]-b[1]-30)<.01 and abs(b[5]-b[2]-1.6)<.01]
-    assert len(charger_pcbs)==1 and abs(charger_pcbs[0][2]-6)<.01 and abs(charger_pcbs[0][5]-7.6)<.01,charger_pcbs
+    charger_top=PARAM['charger_board_top_mm'];charger_bottom=charger_top-1.6
+    assert len(charger_pcbs)==1 and abs(charger_pcbs[0][2]-charger_bottom)<.01 and abs(charger_pcbs[0][5]-charger_top)<.01,charger_pcbs
+    pins=[b for s,b in assemblies['pcb_reference'] if abs(b[0]-172.96)<.001 and
+          abs(b[3]-183.32)<.001 and abs(b[4]-b[1]-.64)<.001 and abs(b[5]-1.62)<.001]
+    assert len(pins)==5,'P1 must have five actual horizontal pins'
+    pin_y=sorted((b[1]+b[4])/2 for b in pins)
+    socket_y=sorted(PARAM['charger_origin_y_mm']-v for v in (9.7100017,12.2500017,14.7900017,17.3300017,19.8700017))
+    assert max(abs(a-b) for a,b in zip(pin_y,socket_y))<.001,'J8/P1 rows are offset'
+    assert abs(charger_top-2.85-1.3)<=.05001,'J8 is above the P1 pin axes'
+    for x,y in charger_mounts():
+        shaft=cylinder(x,y,-1.7,charger_top+.1,1)
+        for name in ('pcb_reference','charger_reference'):
+            pcbs=[s for s,b in assemblies[name] if abs(b[5]-b[2]-1.6)<.001 and b[0]<x<b[3] and b[1]<y<b[4]]
+            assert pcbs and all(volume(BRepAlgoAPI_Common(shaft,s).Shape())<.001 for s in pcbs),'M2 screw does not pass through both PCBs'
+    print('PASS: J8/P1 five-pin mating, Y error <0.001 mm, Z offset 0.05 mm; M2 shafts clear both existing hole grids')
     # The user's ordinary 6 mm spacers are separate hardware, not part of rear.
     rear_inner,_,_,glass_top=rear_levels()
     for x,y in [(5,5),(185,5),(5,155),(185,155)]:
@@ -319,27 +390,28 @@ def main():
     print('PASS: flange/head block outward/inward cap escape; switch wall 4.825 mm from pin')
     # A recessed receptacle admits the metal tongue first; the larger plug
     # overmould starts 2.2 mm behind the connector face (conditional envelope).
-    for plug in [feature_tool('CUT_X',[R(59.65,7.955,8.5,2.75,1)],190.9,193.3),
-                 feature_tool('CUT_X',[R(57.9,6.33,12,6,1)],193.3,202)]:
+    usb_y,usb_z=usb_c_centre()
+    for plug in [feature_tool('CUT_X',[R(usb_y-4.25,usb_z-1.375,8.5,2.75,1)],190.9,193.3),
+                 feature_tool('CUT_X',[R(usb_y-6,usb_z-3,12,6,1)],193.3,202)]:
         assert volume(BRepAlgoAPI_Common(shapes['front'],plug).Shape())<.001,'USB funnel blocks reference plug'
     funnel=next(f for f in FEATURES['front'] if f[1]=='USB_C_funnel')
     inner=list(map(float,funnel[4][0].split(',')[1:]));outer=list(map(float,funnel[4][1].split(',')[1:]))
     assert abs(inner[2]-9.94)<1e-6 and abs(inner[3]-4.16)<1e-6 and abs(inner[4]-1.78)<1e-6
     assert abs(outer[2]-16.8)<1e-6 and abs(outer[3]-10.8)<1e-6
-    assert abs(outer[0]+outer[2]/2-63.9)<1e-6 and abs(outer[1]+outer[3]/2-9.33)<1e-6
+    assert abs(outer[0]+outer[2]/2-usb_y)<1e-6 and abs(outer[1]+outer[3]/2-usb_z)<1e-6
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopAbs import TopAbs_FACE
     faces=TopExp_Explorer(shapes['front'],TopAbs_FACE);ledges=[]
     while faces.More():
         q=bbox(faces.Current())
-        if abs(q[2]-11.41)<1e-5 and abs(q[5]-11.41)<1e-5 and q[0]>190 and q[1]<63.9<q[4]:ledges.append(q)
+        if abs(q[2]-usb_z-2.08)<1e-5 and abs(q[5]-usb_z-2.08)<1e-5 and q[0]>190 and q[1]<usb_y<q[4]:ledges.append(q)
         faces.Next()
     assert len(ledges)==1 and abs(ledges[0][3]-191.1-.5)<1e-5,('USB axial lip is not 0.5 mm',ledges)
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.gp import gp_Pnt
     clearance=[]
-    for y,z in rounded_points(59.43,7.75,8.94,3.16,1.28,8)+[(63.9,7.75),(63.9,10.91),(59.43,9.33),(68.37,9.33)]:
+    for y,z in rounded_points(usb_y-4.47,usb_z-1.58,8.94,3.16,1.28,8)+[(usb_y,usb_z-1.58),(usb_y,usb_z+1.58),(usb_y-4.47,usb_z),(usb_y+4.47,usb_z)]:
         point=BRepBuilderAPI_MakeVertex(gp_Pnt(191.05,y,z)).Vertex()
         clearance.append(BRepExtrema_DistShapeShape(point,shapes['front']).Value())
     assert all(.498<v<.502 for v in clearance),('USB perimeter clearance is not 0.5 mm',min(clearance),max(clearance))
@@ -372,4 +444,10 @@ def main():
     print('Physical fit and printing are not measured by this check.')
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--geometry-only',action='store_true',help='Check CAD while meshes are being regenerated')
+    parser.add_argument('--source-geometry',action='store_true',help='Check exported source solids without asserting native or mesh validation')
+    args=parser.parse_args()
+    main(args.geometry_only,args.source_geometry)
