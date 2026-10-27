@@ -13,7 +13,7 @@ from pathlib import Path
 
 from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Builder
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
@@ -31,12 +31,13 @@ from OCP.XCAFDoc import XCAFDoc_ColorGen, XCAFDoc_DocumentTool
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 ROOT = Path(__file__).resolve().parent
-LCD = ROOT / "LCD_7inch_1024x600_HDMI.step"
+LCD = ROOT / "LCD_7inch_1024x600_HDMI_v2.step"
 ZYNQ = ROOT / "Zynq020_Mini_Mechanical.step"
 MINGWU_MODULE = ROOT / "Mingwu_29p3x18p9_Mechanical.step"
 
 # These are the offsets in the current PcbDoc. The display's rear PCB is
-# 19 mm above the main board top; Zynq is 14.5 mm below it. Only the
+# 19 mm above the main board top. Zynq uses BOTTOM with MODEL.DZ=-14.5 mm;
+# this mirrors the complete Z coordinate and places it toward the LCD. Only the
 # standalone models are regenerated here; their PcbDoc placements are not.
 ZYNQ_OFFSET_MM = 14.5
 LCD_OFFSET_MM = 19.0
@@ -105,7 +106,7 @@ def compound(solids):
     return result
 
 
-def write_model(path, colored_solids):
+def write_model(path, colored_solids, stl_path=None):
     solids = [shape for shape, _color in colored_solids]
     shape = compound(solids)
     document = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
@@ -132,7 +133,7 @@ def write_model(path, colored_solids):
                 or temp_step.read_bytes().count(b"COLOUR_RGB") < 3):
             raise RuntimeError(f"Invalid generated 3D model: {path}")
         os.replace(temp_step, path)
-        os.replace(temp_stl, path.with_suffix(".stl"))
+        os.replace(temp_stl, stl_path or path.with_suffix(".stl"))
     finally:
         temp_step.unlink(missing_ok=True)
         temp_stl.unlink(missing_ok=True)
@@ -140,7 +141,36 @@ def write_model(path, colored_solids):
 
 def make_lcd():
     retained = []
-    for solid in read_solids(LCD):
+    source = read_solids(LCD)
+    glass = next(bbox(s) for s in source if
+                 abs(bbox(s)[3]-bbox(s)[0]-164.28)<.01 and
+                 abs(bbox(s)[5]-8.88)<.01)
+    # Owner's measurements from the FRONT glass border, not from the PCB:
+    # active pixels start 3 mm from the left and 4 mm below the top.
+    active_x=glass[0]+3.0
+    active_y=glass[4]-4.0-85.92
+    for solid in source:
+        q=bbox(solid)
+        if abs(q[3]-q[0]-164.9)<.01 and abs(q[2])<.01 and abs(q[5]-1.6)<.01:
+            # Owner's module has semicircular ear ends around the hole,
+            # rather than a square ear with only one rounded corner.
+            solid=box(0,8.65,0,164.9,115.62,1.6)
+            for x in (4,160.9):
+                for y,join in ((4.655,8.65),(119.615,115.62)):
+                    ear=BRepAlgoAPI_Fuse(cylinder(x,y,0,1.6,4),
+                        box(x-4,min(y,join),0,x+4,max(y,join),1.6)).Shape()
+                    solid=BRepAlgoAPI_Fuse(solid,ear).Shape()
+            for x in (4,160.9):
+                for y in (4.655,119.615):
+                    solid=BRepAlgoAPI_Cut(solid,cylinder(x,y,-.1,1.7,1.5)).Shape()
+        if abs(q[3]-q[0]-154.21)<.01 and abs(q[4]-q[1]-85.92)<.01:
+            retained.append((box(active_x,active_y,q[2],active_x+154.21,active_y+85.92,q[5]),(0,205,225)))
+            continue
+        if abs(q[3]-q[0]-164.28)<.01 and abs(q[2]-7.4)<.01 and abs(q[5]-8.88)<.01:
+            # Separate the visible border from the active patch: coincident
+            # glass/active faces otherwise flicker in Altium and SolidWorks.
+            solid=BRepAlgoAPI_Cut(solid,box(active_x,active_y,7.39,
+                                          active_x+154.21,active_y+85.92,8.89)).Shape()
         x0, _y0, z0, x1, _y1, z1 = bbox(solid)
         # Preserve display stack and the central parts on the rear PCB.
         # Edge connectors, old switch and old spacers are recreated below.
@@ -185,14 +215,12 @@ def make_lcd():
 
     # LCD rear PCB z=0; with a 19 mm placement the spacers end at local
     # z=-19, exactly at the main PCB top.
-    for x in (4.0, 160.9):
-        for y in (4.66, 119.61):
-            retained.append((tube(
-                x, y,
-                -LCD_OFFSET_MM, 0,
-                outer_radius=3.0, hole_radius=1.6,
-            ), METAL))
-    write_model(LCD, retained)
+    for x,y in ((4.0,119.61),(160.9,4.66),(160.9,119.61)):
+        retained.append((tube(
+            x, y, -LCD_OFFSET_MM, 0,
+            outer_radius=3.0, hole_radius=1.6,
+        ), METAL))
+    write_model(LCD, retained, ROOT / "LCD_7inch_1024x600_HDMI.stl")
 
 
 def make_zynq():
@@ -221,9 +249,9 @@ def make_zynq():
                 color = BLACK
             retained.append((solid, color))
 
-    # Zynq components face the main PCB, with the tall connectors occupying
-    # its existing board cutout. Local +z therefore points toward the main
-    # board. The spacer spans from Zynq PCB top to main PCB underside.
+    # BOTTOM and negative MODEL.DZ place the module between main PCB and LCD.
+    # Its local +z faces the main PCB; after projection, local z=12.9 meets
+    # main PCB top z=0, and local z=1.6 is 11.3 mm above it.
     for x, y in holes:
         retained.append((tube(
             x, y, 1.6,

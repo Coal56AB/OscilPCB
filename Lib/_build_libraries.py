@@ -4,6 +4,7 @@ import math
 import sys
 from pathlib import Path
 from _silkscreen import trim_segments
+from _tactile_stack import add_tactile_stack, RELEASED_MM
 
 from altium_monkey import (
     AltiumPcbLib, AltiumSchLib, PadHoleShape, PadShape, PcbBodyProjection, PcbLayer,
@@ -446,8 +447,8 @@ f.add_arc(center_mils=(0,0),radius_mils=mil(3.0),start_angle_degrees=0,
           end_angle_degrees=360,width_mils=mil(0.12),layer=PcbLayer.TOP_OVERLAY)
 body(f,'EC11E base',-5.85,-6.0,5.85,6.0,1.0,0,0x206040)
 body(f,'EC11E metal case',-5.5,-5.5,5.5,5.5,5.5,1.0,0xA0A0A0)
-round_body(f,'EC11E shaft hub',4.2,1.0,6.5,0x303030)
-round_body(f,'EC11E shaft',3.0,13.5,7.5,0xB0B0B0)
+round_body(f,'EC11E shaft hub',4.2,7.5,6.5,0x303030)
+round_body(f,'EC11E shaft',3.0,21.0,7.5,0xB0B0B0)
 s=circuit_symbol('EC11E_ENCODER_SW','ENC',f.name,
  'Alps Alpine EC11E vertical incremental encoder with one push-on switch',
  (-250,400),(-250,-450),comment='EC11E')
@@ -468,7 +469,7 @@ s.add_label('SW',140,-10)
 
 # Custom raised tactile switch: an SMD button on a DIP-8-like carrier.
 # Pins 1-4 are one internally common contact; pins 5-8 are the other.
-f=fp('TACT_SMD_ON_DIP8_RAISED','Raised tactile switch on DIP-8 7.62 mm carrier',7.5)
+f=fp('TACT_SMD_ON_DIP8_RAISED','SMD switch on SOIC/DIP8 adapter in turned-pin socket',RELEASED_MM)
 for n,y in [(1,3.81),(2,1.27),(3,-1.27),(4,-3.81)]:
     pad(f,n,-3.81,y,1.7,1.7,0.9,
         PadShape.RECTANGLE if n==1 else PadShape.CIRCLE)
@@ -477,9 +478,7 @@ for n,y in [(8,3.81),(7,1.27),(6,-1.27),(5,-3.81)]:
 rect(f,-4.8,-5.1,4.8,5.1,PcbLayer.TOP_OVERLAY)
 rect(f,-5.35,-5.65,5.35,5.65,PcbLayer.MECHANICAL_15,0.05)
 track(f,(-5.1,4.75),(-4.85,4.75))
-body(f,'DIP8 raised carrier',-4.8,-5.1,4.8,5.1,4.0,0,0x202020)
-body(f,'SMD tactile switch',-3.1,-3.1,3.1,3.1,3.0,4.0,0x404040)
-body(f,'Tact actuator',-1.6,-1.6,1.6,1.6,0.5,7.0,0x606060)
+add_tactile_stack(f)
 s=circuit_symbol('TACT_SMD_ON_DIP8_RAISED','SB',f.name,
  'Custom raised NO tactile switch; pins 1-4 common, pins 5-8 common',
  (-150,250),(-150,-300),comment='TACT_SMD')
@@ -565,7 +564,7 @@ link_footprint(s, f.name)
 
 
 # Generic vertical BNC pattern: centre plus four shell legs.
-f=fp('BNC_VERTICAL_THT_5PIN','Generic vertical BNC THT, 4 shell legs',20.6)
+f=fp('BNC_VERTICAL_THT_5PIN','Generic vertical BNC THT, 4 shell legs',16.0)
 pad(f,1,0,0,2.0,2.0,1.2,PadShape.CIRCLE)
 for n,x,y in [(2,-3.43,3.43),(3,3.43,3.43),
               (4,3.43,-3.43),(5,-3.43,-3.43)]:
@@ -575,7 +574,7 @@ f.add_arc(center_mils=(0,0),radius_mils=mil(2.5),start_angle_degrees=0,
 rect(f,-8,-8,8,8,PcbLayer.MECHANICAL_15,0.05)
 track(f,(-0.2,2.9),(0.2,2.9))
 round_body(f,'BNC base',5.5,7.0,0,0xB0B0B0)
-round_body(f,'BNC barrel',4.8,20.6,7.0,0xC0C0C0)
+round_body(f,'BNC barrel',4.8,16.0,7.0,0xC0C0C0)
 s=sch.add_symbol('BNC_VERTICAL_THT')
 s.set_description('Generic vertical BNC jack, five through-hole terminals')
 s.add_rectangle(-200,-250,200,250)
