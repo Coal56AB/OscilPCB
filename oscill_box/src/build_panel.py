@@ -114,7 +114,7 @@ def artworks():
         x,y=CONTROLS[key];col=[YELLOW,CYAN][i]
         radius=DATA['parameters']['bnc_opening_mm']/2
         panel.rect(x-3.3,24.5,6.6,6.5,col,r=1)
-        panel.circle(x,y,radius+1.5,None,col,1.3)
+        panel.circle(x,y,radius+1.5,BG,col,1.3)
         panel.circle(x,y,radius,'#ffffff','#b7c4ca',.12)
         panel.text(str(i+1),x,26.4,4.4,BG,True)
     inputs_middle=(CONTROLS['BNC_Channel 0'][0]+CONTROLS['BNC_Channel 1'][0])/2
