@@ -3,3 +3,8 @@
 /AnalExtend/Project Logs for AnalExtend/
 /AnalExtend/Project Outputs for AnalExtend/
 /Lib/3D/
+__pycache__/
+*.pyc
+~$*
+*.SLDPRT.bak
+*.SLDASM.bak
