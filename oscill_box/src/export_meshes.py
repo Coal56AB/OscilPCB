@@ -10,23 +10,29 @@ from vtkmodules.vtkIOGeometry import vtkSTLReader, vtkSTLWriter
 from vtkmodules.vtkFiltersCore import vtkCleanPolyData, vtkFeatureEdges, vtkTriangleFilter, vtkRemoveDuplicatePolys
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
-from build_case import ROOT, read_solids, bbox, transform
+from build_case import ROOT, read_solids
 
 
 def main():
     names=('front','rear','power_cap','kickstand')
     parser=argparse.ArgumentParser();parser.add_argument('--only',choices=names)
+    parser.add_argument('--native',action='store_true',help='Consume stamped SolidWorks exports; reuse the meshes accepted by its cache')
     args=parser.parse_args()
     for name in ((args.only,) if args.only else names):
         source=ROOT/'output'/f'{name}.step'
-        if not source.is_file():continue
+        native=ROOT/'output'/'.native-mesh'/f'{name}.stl'
+        target=ROOT/'output'/f'{name}.stl'
+        if args.native and not native.is_file():
+            if target.is_file():
+                with target.open('rb') as saved:
+                    if saved.read(80).startswith(b'OscillMesh:'):continue
+            raise ValueError(f'{name}: expected a stamped native mesh')
         solids=read_solids(source)
         if len(solids)!=1:raise ValueError(f'{name}: expected one solid before meshing')
         shape=solids[0]
-        native=ROOT/'output'/'.native-mesh'/f'{name}.stl'
         with TemporaryDirectory() as temporary:
-            path=native if native.is_file() else Path(temporary)/f'{name}.stl'
-            if not native.is_file():
+            path=native if args.native else Path(temporary)/f'{name}.stl'
+            if not args.native:
                 mesh=BRepMesh_IncrementalMesh(shape,.01,False,math.radians(5),True)
                 if not mesh.IsDone():raise ValueError(f'{name}: meshing failed')
                 writer=StlAPI_Writer();writer.ASCIIMode=False
@@ -52,9 +58,10 @@ def main():
             mesh_writer.SetFileName(str(output));mesh_writer.SetInputConnection(unique.GetOutputPort())
             if not mesh_writer.Write():raise ValueError(f'{name}: STL welding failed')
             content=output.read_bytes()
-        target=ROOT/'output'/f'{name}.stl'
+            if args.native:
+                with path.open('rb') as raw:content=raw.read(80)+content[80:]
         if not target.is_file() or target.read_bytes()!=content:target.write_bytes(content)
-        if native.is_file():native.unlink()
+        if args.native:native.unlink()
         print(f'STL: {target}',flush=True)
 
 

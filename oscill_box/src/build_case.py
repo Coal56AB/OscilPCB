@@ -46,7 +46,8 @@ from _build_mechanical_models import box, cylinder, tube, compound, read_solids,
 
 def bbox(shape):
     b=Bnd_Box();BRepBndLib.AddOptimal_s(shape,b,False,False)
-    return b.Get()
+    lo,hi=b.CornerMin(),b.CornerMax()
+    return lo.X(),lo.Y(),lo.Z(),hi.X(),hi.Y(),hi.Z()
 
 U=.00000254
 PARAM=json.loads((ROOT/'src/parameters.json').read_text())
@@ -322,17 +323,10 @@ def curved_gusset(loop,bottom,top):
     # The construction plate is not part of the enclosure. Keeping the exact
     # planar foot at root lets the finished ribs merge with the existing panel.
     solid=BRepAlgoAPI_Cut(solid,box(-25,-25,root,25,25,root+2)).Shape()
-    solid=BRepAlgoAPI_Cut(solid,cylinder(0,0,-.1,PARAM['m3_insert_depth_mm'],PARAM['m3_insert_hole_mm']/2)).Shape()
-    from OCP.GeomAbs import GeomAbs_Circle
-    entrance=BRepFilletAPI_MakeFillet(solid);ex=TopExp_Explorer(solid,TopAbs_EDGE);edges=[]
-    while ex.More():
-        e=TopoDS.Edge(ex.Current());c=BRepAdaptor_Curve(e);q=bbox(e)
-        if c.GetType()==GeomAbs_Circle and abs(c.Circle().Radius()-PARAM['m3_insert_hole_mm']/2)<1e-5 and abs(q[2])<1e-5 and abs(q[5])<1e-5:
-            if not any(e.IsSame(old) for old in edges):edges.append(e);entrance.Add(.2,e)
-        ex.Next()
-    entrance.Build()
-    if not entrance.IsDone():raise ValueError('Cannot round mount insert entrance '+loop)
-    solid=entrance.Shape()
+    # The native parent already owns the pillar, insert seat and its entry
+    # round. Export only the reinforcement and a 0.1 mm overlap ring. This
+    # avoids duplicating the small toroidal entry face during STEP import.
+    solid=BRepAlgoAPI_Cut(solid,cylinder(0,0,-.1,root+1,4.1)).Shape()
     if not BRepCheck_Analyzer(solid).IsValid():raise ValueError('Invalid finished mount '+loop)
     return transform(solid,[dx,-dy,0,x,dy,dx,0,y,0,0,1,0])
 

@@ -34,7 +34,13 @@ def mesh_check(name,shape):
     _,counts=np.unique(edges,axis=0,return_counts=True)
     bad=int(np.count_nonzero(counts!=2))
     assert bad==0,(name,'non-manifold STL edges',bad)
-    print('PASS',name,': one valid solid;',n,'STL triangles, closed mesh, millimetres')
+    mesh_volume=0.0
+    for start in range(0,n,65536):
+        tri=records['vertices'][start:start+65536].astype(np.float64)
+        mesh_volume+=float(np.einsum('ij,ij->i',tri[:,0],np.cross(tri[:,1],tri[:,2])).sum())/6
+    solid_volume=volume(shape)
+    assert abs(mesh_volume-solid_volume)<max(.01,solid_volume*.001),(name,'STL volume differs from current CAD',mesh_volume,solid_volume)
+    print('PASS',name,': one valid solid;',n,'STL triangles, closed mesh, millimetres; volume delta %.6g mm3'%(mesh_volume-solid_volume))
 
 
 def main(geometry_only=False,source_geometry=False):

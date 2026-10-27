@@ -44,10 +44,10 @@ public static class SolidWorksCase
                 input.Append("|"+FileDigest(Path.Combine(root,n+".SLDPRT")));
             foreach(var n in new[]{"power_cap","kickstand"})input.Append("|"+TextDigest(File.ReadAllText(Path.Combine(root,"src",n+".pose"))));
         } else if(name.EndsWith("_reference")) {
-            input.Append("|"+BuilderDigest(root,new[]{"Reference","Save"}));
+            input.Append("|"+BuilderDigest(root,new[]{"Reference","ImportStep","Save"}));
             input.Append("|"+TextDigest(File.ReadAllText(Path.Combine(root,"src",name+".fingerprint"))));
         } else {
-            input.Append("|"+BuilderDigest(root,new[]{"M","Line","SpatialLoop","LoopX","Loop","Loft","ImportedUnion","UnionBodies","Part","Save","HideConstruction"}));
+            input.Append("|"+BuilderDigest(root,new[]{"M","Line","SpatialLoop","LoopX","Loop","Loft","ImportStep","ImportedUnion","UnionBodies","Part","Save","HideConstruction"}));
             input.Append("|"+TextDigest(File.ReadAllText(Path.Combine(root,"src",name+".plan"))));
             foreach(string row in File.ReadAllLines(Path.Combine(root,"src",name+".plan"))) {
                 var fields=row.Split('\t');
@@ -78,11 +78,6 @@ public static class SolidWorksCase
             app.ActivateDoc3(doc.GetTitle(),false,0,ref e);
             doc.ClearSelection2(true);
             Save(doc,Path.Combine(root,"output",name+".step"));
-            // Export can dirty the native document or its add-in data even
-            // when its geometry did not change. Save silently before CloseDoc.
-            int saveError=0,saveWarning=0;
-            if(!doc.Save3(1,ref saveError,ref saveWarning) || saveError!=0)
-                throw new Exception("Cannot save after export "+name+": "+saveError);
         }
         Console.WriteLine("UNCHANGED / "+name);
         if(type==1)app.CloseDoc(doc.GetTitle());
@@ -190,12 +185,29 @@ public static class SolidWorksCase
             foreach(string name in new[]{"front","rear","power_cap","kickstand"}) {
                 if(!string.IsNullOrEmpty(only) && only!=name)continue;
                 string path=Path.Combine(root,name+".SLDPRT");int e=0,w=0;
+                byte[] stamp=PrintMeshStamp(root,name,angleDegrees);
+                string target=Path.Combine(root,"output",name+".stl");
+                if(File.Exists(target)) {
+                    using(var reader=new BinaryReader(File.OpenRead(target))) {
+                        if(reader.BaseStream.Length>=84) {
+                            byte[] saved=reader.ReadBytes(80);uint triangles=reader.ReadUInt32();
+                            bool current=reader.BaseStream.Length==84L+50L*triangles;
+                            for(int k=0;k<80;k++)current&=saved[k]==stamp[k];
+                            if(current){
+                                string stale=Path.Combine(outputDirectory,name+".stl");
+                                if(File.Exists(stale))File.Delete(stale);
+                                Console.WriteLine("UNCHANGED STL / "+name);continue;
+                            }
+                        }
+                    }
+                }
                 var doc=(ModelDoc2)app.GetOpenDocumentByName(path);bool visible=doc!=null&&doc.Visible;
                 if(doc==null)doc=(ModelDoc2)app.OpenDoc6(path,1,1,"",ref e,ref w);
                 if(doc==null)throw new Exception("Cannot export print mesh "+name+": "+e);
                 app.ActivateDoc3(doc.GetTitle(),false,0,ref e);doc.ClearSelection2(true);
-                Save(doc,Path.Combine(outputDirectory,name+".stl"));
-                if(!doc.Save3(1,ref e,ref w)||e!=0)throw new Exception("Cannot save after STL export "+name);
+                string mesh=Path.Combine(outputDirectory,name+".stl");
+                Save(doc,mesh);
+                using(var stream=new FileStream(mesh,FileMode.Open,FileAccess.Write))stream.Write(stamp,0,stamp.Length);
                 if(!visible)app.CloseDoc(doc.GetTitle());
                 Console.WriteLine("NATIVE STL / "+name);
             }
@@ -261,15 +273,36 @@ public static class SolidWorksCase
         if(add)return doc.FeatureManager.InsertProtrusionBlend2(false,false,false,1,0,0,0,0,false,false,false,0,0,0,true,true,true,0);
         return doc.FeatureManager.InsertCutBlend(false,false,false,0,0,0,false,0,0,0,true,true);
     }
+    static ModelDoc2 ImportStep(string path) {
+        bool interconnect=app.GetUserPreferenceToggle(691);
+        bool multiBody=app.GetUserPreferenceToggle(220);
+        string defaultPart=app.GetUserPreferenceStringValue(8);
+        string defaultAssembly=app.GetUserPreferenceStringValue(9);
+        ModelDoc2 doc;int e=0;
+        try {
+            app.SetUserPreferenceToggle(691,false);
+            app.SetUserPreferenceToggle(220,true);
+            app.SetUserPreferenceStringValue(8,partTemplate);
+            app.SetUserPreferenceStringValue(9,assemblyTemplate);
+            var data=(ImportStepData)app.GetImportFileData(path);
+            if(data!=null)data.MapConfigurationData=false;
+            doc=(ModelDoc2)app.LoadFile4(path,"",data,ref e);
+        } finally {
+            app.SetUserPreferenceToggle(691,interconnect);
+            app.SetUserPreferenceToggle(220,multiBody);
+            app.SetUserPreferenceStringValue(8,defaultPart);
+            app.SetUserPreferenceStringValue(9,defaultAssembly);
+        }
+        if(doc==null)throw new Exception("Cannot import STEP "+path+": "+e);
+        return doc;
+    }
     static Feature ImportedUnion(ModelDoc2 target,string file,string name) {
         var existing=(Feature)((PartDoc)target).FeatureByName(name+"_solid");
         if(existing!=null)return UnionBodies(target);
         Body2 copy=null;ModelDoc2 imported=null;
         app.DocumentVisible(false,1);
         try {
-            int error=0;
-            imported=(ModelDoc2)app.LoadFile4(file,"r",null,ref error);
-            if(imported==null)throw new Exception("Cannot import gusset "+file+": "+error);
+            imported=ImportStep(file);
             var bodies=(object[])((PartDoc)imported).GetBodies2(0,false);
             if(bodies==null || bodies.Length!=1)throw new Exception("Expected one gusset solid "+name);
             copy=(Body2)((Body2)bodies[0]).Copy();
@@ -424,26 +457,7 @@ public static class SolidWorksCase
         if(openPart!=null)app.CloseDoc(openPart.GetTitle());
         int e=0;
         string path=Path.Combine(root,"src",name+".step");
-        bool interconnect=app.GetUserPreferenceToggle(691);
-        bool multiBody=app.GetUserPreferenceToggle(220);
-        string defaultPart=app.GetUserPreferenceStringValue(8);
-        string defaultAssembly=app.GetUserPreferenceStringValue(9);
-        ModelDoc2 doc;
-        try {
-            app.SetUserPreferenceToggle(691,false);
-            app.SetUserPreferenceToggle(220,true);
-            app.SetUserPreferenceStringValue(8,partTemplate);
-            app.SetUserPreferenceStringValue(9,assemblyTemplate);
-            var data=(ImportStepData)app.GetImportFileData(path);
-            if(data!=null)data.MapConfigurationData=false;
-            doc=(ModelDoc2)app.LoadFile4(path,"",data,ref e);
-        } finally {
-            app.SetUserPreferenceToggle(691,interconnect);
-            app.SetUserPreferenceToggle(220,multiBody);
-            app.SetUserPreferenceStringValue(8,defaultPart);
-            app.SetUserPreferenceStringValue(9,defaultAssembly);
-        }
-        if(doc==null)throw new Exception("Cannot import "+name+" error="+e);
+        var doc=ImportStep(path);
         Save(doc,Path.Combine(root,name+".SLDPRT"));
         app.CloseDoc(doc.GetTitle());
         // An imported multi-body STEP may be an assembly. Save-as-part does
@@ -527,6 +541,28 @@ public static class SolidWorksCase
         Save(doc,Path.Combine(root,"oscill_case.SLDASM"));
         complete=true;
         } finally {if(!complete)app.CloseDoc(doc.GetTitle());}
+    }
+    public static string SuspendCam() {
+        if(app==null)app=(ISldWorks)Activator.CreateInstance(Type.GetTypeFromProgID("SldWorks.Application"));
+        string path=Path.GetFullPath(Path.Combine(app.GetExecutablePath(),"..","SOLIDWORKS CAM","cwaddinu.dll"));
+        if(!File.Exists(path))return "";
+        int result=app.UnloadAddIn(path);
+        if(result==0)return path;
+        if(result==1)return "";
+        throw new Exception("Cannot suspend CAM add-in: "+result);
+    }
+    public static void RestoreCam(string path) {
+        if(string.IsNullOrEmpty(path))return;
+        int result=app.LoadAddIn(path);
+        if(result!=0 && result!=2)throw new Exception("Cannot restore CAM add-in: "+result);
+    }
+    static byte[] PrintMeshStamp(string root,string name,double angleDegrees) {
+        string key=FileDigest(Path.Combine(root,name+".SLDPRT"))+"|"+
+            angleDegrees.ToString("R",CultureInfo.InvariantCulture)+"|"+
+            BuilderDigest(root,new[]{"ExportPrintMeshes","Save","PrintMeshStamp"})+"|"+
+            TextDigest(File.ReadAllText(Path.Combine(root,"src","export_meshes.py")));
+        var stamp=new byte[80];byte[] value=Encoding.ASCII.GetBytes("OscillMesh:"+TextDigest(key));
+        Array.Copy(value,stamp,value.Length);return stamp;
     }
     public static void Build(string root,string templates,string only,bool force=false) {
         forceBuild=force;
