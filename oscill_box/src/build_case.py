@@ -780,19 +780,36 @@ def layout_and_plans(board):
         feature(part,'CUT','Top_connector_access',lo,hi,R(access[0],access[1],access[3]-access[0],access[4]-access[1]))
     # Existing MSK12C02 pin moves along Y; the cap socket is driven by its STEP.
     # Owner requirement: local wall within 5 mm of the original switch pin.
-    # A flange is captured inside the two halves; the cap cannot pull out.
-    slide=PARAM['sliding_clearance_mm'];slot_width=3.8+1.5+2*slide
+    # Both stem and flange run in the case, so the switch pin does not act as
+    # the transverse guide. End clearance is independent of guide clearance.
+    slide=PARAM['sliding_clearance_mm']
+    end_clearance=PARAM['switch_end_clearance_mm']
+    axial=PARAM['switch_axial_clearance_mm']
+    slot_width=3.8+1.5+2*end_clearance
+    flange_width=8.4+1.5+2*end_clearance
+    flange_end=192.6-data['power_cap_origin_mm'][0]-axial
+    thumb_start=193.8-data['power_cap_origin_mm'][0]+axial
     for part in ['rear','front']:
-        feature(part,'ADD','Power_retaining_web',-5.85 if part=='rear' else -2,
-                -2 if part=='rear' else 1.35,R(192.6,87.5,.6,13.5))
+        feature(part,'ADD','Power_slider_guide',-6 if part=='rear' else -2,
+                -2 if part=='rear' else 1.5,R(190.8,87.5,3,13.5))
+        # Open toward the PCB: no fragile back wall around the pin. The two
+        # 0.9 mm rails guide the flange; the thumb pad retains it inward.
+        feature(part,'CUT','Power_flange_track',-2.25-2.7-slide,
+                -2.25+2.7+slide,R(190.7,94.27-flange_width/2,1.9,flange_width))
         feature(part,'CUT','Slider_slot',-2.25-1.5-slide if part=='rear' else -3.7,
                 -2.25+1.5+slide,R(189.2,94.27-slot_width/2,7.8,slot_width))
+        # Relieve the two guide entries around the rounded stem shoulders.
+        # The central straight land and flange rails retain the guide fit.
+        guide=R(94.27-slot_width/2,-2.25-1.5-slide,slot_width,3+2*slide)
+        entry=R(94.27-slot_width/2-.25,-2.25-1.5-slide-.25,slot_width+.5,3+2*slide+.5)
+        feature(part,'CUT_X_LOFT','Slider_inner_entry',192.59,192.85,entry,guide)
+        feature(part,'CUT_X_LOFT','Slider_outer_entry',193.55,193.81,guide,entry)
         feature(part,'CUT_X','Power_thumb_recess',193.8,197.2,R(88.92,-5.85,10.7,7.2,1.4))
         feature(part,'CUT_X_LOFT','Power_recess_bevel',195,195.8,
                 R(88.92,-5.85,10.7,7.2,1.4),R(88.12,-6.65,12.3,8.8,2.2))
     feature('power_cap','ADD','Slider_stem',0,4.2,R(-1.9,-1.5,3.8,3.0,.4))
-    feature('power_cap','ADD','Captive_flange',1.2,2.4,R(-4.2,-2.7,8.4,5.4,.5))
-    feature('power_cap','ADD','Thumb_pad',4.2,5,R(-4.2,-3.2,8.4,6.4,1))
+    feature('power_cap','ADD','Captive_flange',1.2,flange_end,R(-4.2,-2.7,8.4,5.4,.5))
+    feature('power_cap','ADD','Thumb_pad',thumb_start,5,R(-4.2,-3.2,8.4,6.4,1))
     sw,sh=PARAM['switch_socket_width_mm'],PARAM['switch_socket_height_mm']
     feature('power_cap','CUT','Switch_pin_socket',-.1,2.3,R(-sw/2,-sh/2,sw,sh,.1))
     # Open the first 0.6 mm of the socket roof to clear the main PCB edge.
@@ -936,7 +953,9 @@ def check_shapes(export_source=False):
                     elif loops[0]=='thumb_ribs':
                         selected=abs(q[2]-hi)<1e-5 and abs(q[5]-hi)<1e-5 and abs(p.Y())<1.8 and any(abs(abs(p.X()-x)-.4)<1e-5 for x in (-2.4,0,2.4))
                     elif loops[0]=='stem':
-                        selected=any(abs(q[2]-z)<1e-5 and abs(q[5]-z)<1e-5 for z in (1.2,2.4,4.2)) and (abs(abs(p.X())-1.9)<1e-5 or abs(abs(p.Y())-1.5)<1e-5)
+                        shoulders=[f[2] for f in features if f[1] in ('Captive_flange','Thumb_pad')]
+                        shoulders += [f[3] for f in features if f[1]=='Captive_flange']
+                        selected=any(abs(q[2]-z)<1e-5 and abs(q[5]-z)<1e-5 for z in shoulders) and (abs(abs(p.X())-1.9)<1e-5 or abs(abs(p.Y())-1.5)<1e-5)
                     elif loops[0]=='stand_inside':
                         selected=q[3]-q[0]<1e-5 and q[4]-q[1]<1e-5 and abs(q[1]-(7.8-PARAM['lower_extension_mm']))<1e-5 and any(abs(q[0]-x)<1e-5 for x in (10.2,179.8))
                     elif loops[0]=='stand_necks':

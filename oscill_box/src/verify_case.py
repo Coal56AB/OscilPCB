@@ -24,6 +24,29 @@ def overlap(a,b):
     return all(a[k+3]>b[k]+1e-6 and b[k+3]>a[k]+1e-6 for k in range(3))
 
 
+def check_power_guide(shapes,data):
+    cx,cy,cz=data['power_cap_origin_mm']
+    axial_free=PARAM['switch_axial_clearance_mm']-.02
+    transverse_free=PARAM['sliding_clearance_mm']-.03
+    # The case must guide the cap even when no switch pin is present.
+    for dy in [0,-.375,-.75,-1.125,-1.5]:
+        for dx in [-axial_free,0,axial_free]:
+            for dz in [-transverse_free,0,transverse_free]:
+                cap=transform(shapes['power_cap'],[0,0,1,cx+dx,1,0,0,cy+dy,0,1,0,cz+dz])
+                for name in ['front','rear']:
+                    assert volume(BRepAlgoAPI_Common(cap,shapes[name]).Shape())<.001,('slider guide binds',dy,dx,dz,name)
+        for axis,offset in [('axial',PARAM['switch_axial_clearance_mm']+.03),
+                            ('transverse',PARAM['sliding_clearance_mm']+.03)]:
+            for sign in [-1,1]:
+                dx=sign*offset if axis=='axial' else 0
+                dz=sign*offset if axis=='transverse' else 0
+                cap=transform(shapes['power_cap'],[0,0,1,cx+dx,1,0,0,cy+dy,0,1,0,cz+dz])
+                stop=sum(volume(BRepAlgoAPI_Common(cap,s).Shape()) for s in (shapes['front'],shapes['rear']))
+                assert stop>.001,('slider guide does not limit movement',axis,dy,sign,stop)
+    print('PASS: slider clears the case through its 1.5 mm stroke with combined +/-%.2f mm axial and +/-%.2f mm transverse offsets'%(axial_free,transverse_free),flush=True)
+    print('PASS: case alone limits axial movement to +/-%.2f mm and transverse movement to +/-%.2f mm'%(PARAM['switch_axial_clearance_mm'],PARAM['sliding_clearance_mm']),flush=True)
+
+
 def check_screen_bevel(shape,data):
     x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
     bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
@@ -207,7 +230,8 @@ def main(geometry_only=False,source_geometry=False):
     tongue=box(-4.7,20,-1.5,-4.1,30,-.6)
     assert abs(volume(BRepAlgoAPI_Common(shapes['rear'],tongue).Shape())-volume(tongue))<.001,'locating tongue missing'
     assert volume(BRepAlgoAPI_Common(shapes['front'],tongue).Shape())<.001,'tongue has no mating groove'
-    positions=[(dy,dx) for dy in [0,-.75,-1.5] for dx in [-.25,0,.25]]
+    axial_free=PARAM['switch_axial_clearance_mm']-.02
+    positions=[(dy,dx) for dy in [0,-.375,-.75,-1.125,-1.5] for dx in [-axial_free,0,axial_free]]
     cx,cy,cz=data['power_cap_origin_mm']
     caps=[transform(shapes['power_cap'],[0,0,1,cx+dx,1,0,0,cy+dy,0,1,0,cz]) for dy,dx in positions]
     assert all(bbox(c)[3]<data['case_bounds'][3]-.19 for c in caps),'power head protrudes'
@@ -428,7 +452,7 @@ def main(geometry_only=False,source_geometry=False):
             cap=transform(shapes['power_cap'],[0,0,1,cx+dx,1,0,0,cy+dy,0,1,0,cz])
             stop=sum(volume(BRepAlgoAPI_Common(cap,s).Shape()) for s in (shapes['front'],shapes['rear']))
             assert stop>.1,('cap can escape without hitting the retaining flange or outer head',dy,dx,stop)
-    print('PASS: halves, electronics and slider have no intersections through stroke and +/-0.25 mm axial play')
+    check_power_guide(shapes,data)
     print('PASS: flange/head block outward/inward cap escape; switch wall 4.825 mm from pin')
     # A recessed receptacle admits the metal tongue first; the larger plug
     # overmould starts 2.2 mm behind the connector face (conditional envelope).
