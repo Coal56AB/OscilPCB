@@ -339,14 +339,14 @@ def screen_bevel_angle(run,height,radius):
 
 
 def rounded_screen_tool(data):
-    """Intersect two extruded sections, keeping the rectangular image corners clear."""
+    """Round the nose above the glass datum; the later trim removes its lower half."""
     x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
     bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
     top=bottom+PARAM['panel_thickness_mm'];r=PARAM['screen_edge_radius_mm']
     def side(gap):
-        angle=screen_bevel_angle(gap,top-bottom,r)
-        lower=(gap-r,bottom);upper=(-r*math.tan(angle/2),top)
-        lc=(lower[0],bottom+r);uc=(upper[0],top-r)
+        angle=screen_bevel_angle(gap,top-bottom+r,r)
+        lower=(gap-r,bottom-r);upper=(-r*math.tan(angle/2),top)
+        lc=(lower[0],bottom);uc=(upper[0],top-r)
         on=lambda c,a:(c[0]+r*math.cos(a),c[1]+r*math.sin(a))
         lt=on(lc,math.pi/2-angle);ut=on(uc,math.pi/2-angle)
         return [(None,(lower[0],bottom-1),lower),
@@ -574,7 +574,7 @@ def layout_and_plans(board):
     inner=R(-gap,-gap-extra,190+2*gap,160+2*gap+extra,gap)
     display=display_layout(board)
     active=display['active_mm']
-    # The finished rounded lip follows the active area. Keep the outside
+    # The nose meets the flat underside at the active border. Keep the outside
     # contour centred on the case, preserving equal side fields.
     screen_x,screen_y=active[:2]
     screen_width=active[3]-active[0]
@@ -586,13 +586,10 @@ def layout_and_plans(board):
     bezel_top=bezel_bottom+PARAM['panel_thickness_mm']
     radius=PARAM['screen_edge_radius_mm']
     def rounded_run(run):
-        # Tangency to a circle whose inward extreme is on the active border.
-        # Its centre is radius outward and radius above the underside.
-        angle=screen_bevel_angle(run,PARAM['panel_thickness_mm'],radius)
-        return PARAM['panel_thickness_mm']/math.tan(angle)
+        angle=screen_bevel_angle(run,PARAM['panel_thickness_mm']+radius,radius)
+        return (PARAM['panel_thickness_mm']+radius)/math.tan(angle)
     ex,ey,ew,eh=screen_outer
-    ix=ex+rounded_run(screen_x-ex)
-    iy=ey+rounded_run(screen_y-ey)
+    ix=ex+rounded_run(screen_x-ex);iy=ey+rounded_run(screen_y-ey)
     ir=ex+ew-rounded_run(ex+ew-screen_x-screen_width)
     it=ey+eh-rounded_run(ey+eh-screen_y-screen_height)
     screen_inner=[ix,iy,ir-ix,it-iy]
@@ -668,11 +665,16 @@ def layout_and_plans(board):
     # A rectangular bounding-box cut would create an unnecessary visible slot.
     sx,sy,sw,sh=screen_inner
     ex,ey,ew,eh=screen_outer
-    feature('front','CUT_Z_LOFT','Screen_edge_bevel',bezel_bottom,bezel_top,
+    stock=P([(ex-1,ey-1),(ex+ew+1,ey-1),(ex+ew+1,ey+eh+1),(ex-1,ey+eh+1)])
+    # Form the complete native fillet on temporary stock, then remove the part
+    # below the glass datum. The remaining arc has a vertical tangent there,
+    # meeting the horizontal underside at 90 degrees rather than tapering to zero.
+    feature('front','ADD','Screen_round_stock',bezel_bottom-radius,bezel_bottom+.01,stock)
+    feature('front','CUT_Z_LOFT','Screen_edge_bevel',bezel_bottom-radius,bezel_top,
             P([(sx,sy),(sx+sw,sy),(sx+sw,sy+sh),(sx,sy+sh)]),
             P([(ex,ey),(ex+ew,ey),(ex+ew,ey+eh),(ex,ey+eh)]))
-    # Round the simple window before mounting webs split the surrounding faces.
     feature('front','FILLET','Bezel_free_edge_round',PARAM['screen_edge_radius_mm'],0,'window_edges')
+    feature('front','CUT','Screen_round_stock_trim',bezel_bottom-radius-.1,bezel_bottom,stock)
     # Local underside ribs occupy the empty lanes between controls. The panel
     # itself remains 13.5 mm above the PCB; ribs project lower only here.
     rib_width=PARAM['control_rib_width_mm'];rib_bottom=PARAM['control_rib_bottom_mm']
@@ -920,11 +922,12 @@ def check_shapes(export_source=False):
                         edge_x=PARAM['pcb_edge_clearance_mm']+PARAM['wall_mm']
                         selected=q[3]-q[0]<1e-5 and q[4]-q[1]<1e-5 and q[5]-q[2]>3 and abs(q[1]-34.2)<1e-5 and any(abs(q[0]-x)<1e-5 for x in (-edge_x,190+edge_x))
                     elif loops[0]=='window_edges':
-                        window_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
-                        window_top=window_bottom+PARAM['panel_thickness_mm']
+                        window_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']-PARAM['screen_edge_radius_mm']
+                        window_top=window_bottom+PARAM['panel_thickness_mm']+PARAM['screen_edge_radius_mm']
                         upper=abs(q[2]-window_top)<1e-5 and abs(q[5]-window_top)<1e-5
-                        from OCP.GeomAbs import GeomAbs_Line
-                        inner=abs(q[2]-window_bottom)<1e-5 and abs(q[5]-window_bottom)<1e-5 and c.GetType()==GeomAbs_Line
+                        sx,sy,sw,sh=data['screen_bevel_inner_window']
+                        at_side=(q[3]-q[0]<1e-5 and any(abs(q[0]-x)<1e-5 for x in (sx,sx+sw))) or (q[4]-q[1]<1e-5 and any(abs(q[1]-y)<1e-5 for y in (sy,sy+sh)))
+                        inner=abs(q[2]-window_bottom)<1e-5 and abs(q[5]-window_bottom)<1e-5 and at_side
                         # Rounding the diagonal joins would obscure image corners.
                         selected=q[0]>10 and q[3]<180 and q[1]>45 and q[4]<152 and (upper or inner)
                     elif loops[0]=='stand_front_edges':

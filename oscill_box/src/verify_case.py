@@ -54,7 +54,7 @@ def check_screen_bevel(shape,data):
     faces=[];rounds=[];explorer=TopExp_Explorer(shape,TopAbs_FACE)
     while explorer.More():
         face=TopoDS.Face(explorer.Current());surface=BRepAdaptor_Surface(face);q=bbox(face)
-        if ex-.01<q[0] and q[3]<ex+ew+.01 and ey-.01<q[1] and q[4]<ey+eh+.01 and q[2]>bottom-.01:
+        if ex-radius-.01<q[0] and q[3]<ex+ew+radius+.01 and ey-radius-.01<q[1] and q[4]<ey+eh+radius+.01 and q[2]>bottom-.01:
             if surface.GetType()==GeomAbs_Plane:
                 normal=surface.Plane().Axis().Direction()
                 if .1<abs(normal.Z())<.99:faces.append(face)
@@ -63,14 +63,18 @@ def check_screen_bevel(shape,data):
         explorer.Next()
     assert len(faces)==4,('screen must have four planar bevel faces',len(faces))
     assert rounds,'screen edge rounds are missing'
+    nose=[face for face in rounds if abs(bbox(face)[2]-bottom)<.002]
+    outside=[face for face in rounds if bbox(face)[2]>bottom+.01]
+    assert nose and outside,'both the rounded nose and outside rim must remain'
+    assert all(abs(BRepAdaptor_Surface(face).Cylinder().Location().Z()-bottom)<.002 for face in nose),'nose must meet the flat underside at 90 degrees'
     for t in (.25,.5,.75):
         for px,py in ((x,y+t*h),(x+w,y+t*h),(x+t*w,y),(x+t*w,y+h)):
-            point=BRepBuilderAPI_MakeVertex(gp_Pnt(px,py,bottom+radius)).Vertex()
-            distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in rounds)
-            assert distance<.002,('rounded screen lip misses active-area border',px,py,distance)
+            point=BRepBuilderAPI_MakeVertex(gp_Pnt(px,py,bottom)).Vertex()
+            distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in nose)
+            assert distance<.002,('screen nose misses active-area border',px,py,distance)
     aperture=box(x+.01,y+.01,bottom-.01,x+w-.01,y+h-.01,bottom+PARAM['panel_thickness_mm']+.01)
     assert volume(BRepAlgoAPI_Common(shape,aperture).Shape())<.001,'screen lip obscures active area'
-    print('PASS: R%.1f screen lip follows active-area border on all four sides and leaves the image clear'%radius,flush=True)
+    print('PASS: R%.1f screen nose meets the flat underside at 90 degrees, follows the active area and leaves the image clear'%radius,flush=True)
 
 
 def mesh_check(name,shape):
