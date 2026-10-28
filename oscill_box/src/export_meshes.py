@@ -6,11 +6,37 @@ from tempfile import TemporaryDirectory
 
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.StlAPI import StlAPI_Writer
+from OCP.BRepCheck import BRepCheck_Analyzer
 from vtkmodules.vtkIOGeometry import vtkSTLReader, vtkSTLWriter
 from vtkmodules.vtkFiltersCore import vtkCleanPolyData, vtkFeatureEdges, vtkTriangleFilter, vtkRemoveDuplicatePolys
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 from build_case import ROOT, read_solids
+
+
+def mesh_solid(shape,path):
+    mesh=BRepMesh_IncrementalMesh(shape,.01,False,math.radians(5),True)
+    if not mesh.IsDone():raise ValueError('Solid meshing failed')
+    writer=StlAPI_Writer();writer.ASCIIMode=False
+    if not writer.Write(shape,str(path)):raise ValueError('STL export failed')
+
+
+def weld_mesh(path):
+    # Binary STL duplicates float32 vertices. Weld only the submicron
+    # round-off, well below the mesher's 0.01 mm chord error.
+    reader=vtkSTLReader();reader.SetFileName(str(path));reader.Update()
+    bounds=reader.GetOutput().GetBounds()
+    placement=vtkTransform();placement.Translate(-bounds[0],-bounds[2],-bounds[4])
+    placed=vtkTransformPolyDataFilter();placed.SetInputConnection(reader.GetOutputPort());placed.SetTransform(placement)
+    clean=vtkCleanPolyData();clean.SetInputConnection(placed.GetOutputPort())
+    clean.SetToleranceIsAbsolute(True);clean.SetAbsoluteTolerance(.0001)
+    clean.ConvertPolysToLinesOn();clean.ConvertLinesToPointsOn()
+    triangles=vtkTriangleFilter();triangles.SetInputConnection(clean.GetOutputPort())
+    triangles.PassLinesOff();triangles.PassVertsOff()
+    unique=vtkRemoveDuplicatePolys();unique.SetInputConnection(triangles.GetOutputPort())
+    edges=vtkFeatureEdges();edges.SetInputConnection(unique.GetOutputPort())
+    edges.BoundaryEdgesOn();edges.NonManifoldEdgesOn();edges.FeatureEdgesOff();edges.ManifoldEdgesOff();edges.Update()
+    return unique.GetOutput(),edges.GetOutput().GetNumberOfCells()
 
 
 def main():
@@ -32,30 +58,21 @@ def main():
         shape=solids[0]
         with TemporaryDirectory() as temporary:
             path=native if args.native else Path(temporary)/f'{name}.stl'
-            if not args.native:
-                mesh=BRepMesh_IncrementalMesh(shape,.01,False,math.radians(5),True)
-                if not mesh.IsDone():raise ValueError(f'{name}: meshing failed')
-                writer=StlAPI_Writer();writer.ASCIIMode=False
-                if not writer.Write(shape,str(path)):raise ValueError(f'{name}: STL export failed')
-            # Binary STL stores each triangle separately as float32. Weld the
-            # submicron round-off at shared edges, below the 0.01 mm chord error.
-            reader=vtkSTLReader();reader.SetFileName(str(path));reader.Update()
-            bounds=reader.GetOutput().GetBounds()
-            placement=vtkTransform();placement.Translate(-bounds[0],-bounds[2],-bounds[4])
-            placed=vtkTransformPolyDataFilter();placed.SetInputConnection(reader.GetOutputPort());placed.SetTransform(placement)
-            clean=vtkCleanPolyData();clean.SetInputConnection(placed.GetOutputPort())
-            clean.SetToleranceIsAbsolute(True);clean.SetAbsoluteTolerance(.0001)
-            clean.ConvertPolysToLinesOn();clean.ConvertLinesToPointsOn()
-            triangles=vtkTriangleFilter();triangles.SetInputConnection(clean.GetOutputPort())
-            triangles.PassLinesOff();triangles.PassVertsOff()
-            unique=vtkRemoveDuplicatePolys();unique.SetInputConnection(triangles.GetOutputPort())
-            edges=vtkFeatureEdges();edges.SetInputConnection(unique.GetOutputPort())
-            edges.BoundaryEdgesOn();edges.NonManifoldEdgesOn();edges.FeatureEdgesOff();edges.ManifoldEdgesOff();edges.Update()
-            if edges.GetOutput().GetNumberOfCells():
-                raise ValueError(f'{name}: meshing left open/nonmanifold edges; regenerate with SolidWorks ExportPrintMeshes')
+            if not args.native:mesh_solid(shape,path)
+            polydata,bad_edges=weld_mesh(path)
+            if bad_edges and args.native:
+                # Native STL can contain folded triangles at blended junctions.
+                # Re-tessellate the actual SolidWorks STEP, never the independent
+                # source construction, and keep the same closure/volume checks.
+                if not BRepCheck_Analyzer(shape).IsValid():raise ValueError(f'{name}: invalid native CAD solid')
+                fallback=Path(temporary)/'native-step.stl'
+                mesh_solid(shape,fallback)
+                polydata,bad_edges=weld_mesh(fallback)
+                print(f'REMESH NATIVE STEP: {name}',flush=True)
+            if bad_edges:raise ValueError(f'{name}: meshing left {bad_edges} open/nonmanifold edges')
             output=Path(temporary)/'welded.stl'
             mesh_writer=vtkSTLWriter();mesh_writer.SetFileTypeToBinary()
-            mesh_writer.SetFileName(str(output));mesh_writer.SetInputConnection(unique.GetOutputPort())
+            mesh_writer.SetFileName(str(output));mesh_writer.SetInputData(polydata)
             if not mesh_writer.Write():raise ValueError(f'{name}: STL welding failed')
             content=output.read_bytes()
             if args.native:

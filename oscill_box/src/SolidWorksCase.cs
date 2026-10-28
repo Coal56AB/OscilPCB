@@ -566,7 +566,7 @@ public static class SolidWorksCase
     }
     public static void Build(string root,string templates,string only,bool force=false) {
         forceBuild=force;
-        app=(ISldWorks)Activator.CreateInstance(Type.GetTypeFromProgID("SldWorks.Application"));
+        if(app==null)app=(ISldWorks)Activator.CreateInstance(Type.GetTypeFromProgID("SldWorks.Application"));
         app.Visible=true;
         partTemplate=Path.Combine(templates,"gost-part.prtdot");
         assemblyTemplate=Path.Combine(templates,"gost-assy.asmdot");
