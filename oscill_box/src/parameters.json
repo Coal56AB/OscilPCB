@@ -48,5 +48,8 @@
   "switch_axial_clearance_mm": 0.12,
   "stand_open_degrees": 45,
   "stand_hinge_y_mm": 125,
-  "stand_hinge_z_mm": -6.2
+  "stand_hinge_z_mm": -6.2,
+  "stand_glass_assembly_shift_mm": 8.0,
+  "stand_shoulder_setback_mm": 4.0,
+  "stand_glass_keeper_radius_mm": 3.4
 }

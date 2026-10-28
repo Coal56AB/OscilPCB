@@ -238,9 +238,10 @@ def build_stand():
     front=rear_outer-.4;back=front-5.6;neck_back=front-2.8
     # Broad U frame lies behind the rear face. Only the short pivot necks
     # enter the existing sidewalls; there are no external hinge brackets.
-    feature('kickstand','ADD','Left_leg',back,front,R(-2.6,-2.6-extra,12.8,cy+2.6+extra,2))
+    leg_top=cy-PARAM['stand_shoulder_setback_mm']
+    feature('kickstand','ADD','Left_leg',back,front,R(-2.6,-2.6-extra,12.8,leg_top+2.6+extra,2))
     feature('kickstand','ADD','Foot_crossbar',back,front,R(-2.6,-5-extra,195.2,12.8,2))
-    feature('kickstand','ADD','Right_leg',back,front,R(179.8,-2.6-extra,12.8,cy+2.6+extra,2))
+    feature('kickstand','ADD','Right_leg',back,front,R(179.8,-2.6-extra,12.8,leg_top+2.6+extra,2))
     half=math.radians(PARAM['stand_open_degrees']/2)
     py=cy-5*math.cos(half);pz=cz-5*math.sin(half)
     for i,(sx0,sx1,px0,px1) in enumerate([(-2.6,3.8,-3.5,-.9),(186.2,192.6,190.9,193.5)]):
@@ -249,6 +250,11 @@ def build_stand():
         feature('kickstand','ADD_X','Pivot_neck_'+str(i),sx0,sx1,
                 P([(cy-9.6,neck_back),(cy,neck_back),(cy,cz),(cy-2.2,-2),(cy-9.6,-2)]))
         feature('kickstand','ADD_X','Pivot_lug_'+str(i),sx0,sx1,C(cy,cz,4.3))
+        # A circular inner shoulder remains above the acrylic through the full
+        # rotation and blocks withdrawal through the narrow working notch.
+        feature('kickstand','ADD_X','Glass_keeper_'+str(i),
+                3.6 if i==0 else 183.6,6.4 if i==0 else 186.4,
+                C(cy,cz,PARAM['stand_glass_keeper_radius_mm']))
         # Integral axles drop into blind U bearings before the case is closed.
         feature('kickstand','ADD_X','Captive_axle_'+str(i),-4.3 if i==0 else 192.3,
                 -2.3 if i==0 else 194.3,C(cy,cz,2.5))
@@ -738,8 +744,14 @@ def layout_and_plans(board):
             LOWER(-gap,support_y,190+2*gap,support_end-support_y,gap))
     feature('rear','FILLET','PCB_support_root_round',1,-1.6,'support')
     feature('rear_glass','ADD','Acrylic_2mm',glass_bottom,glass_top,R(-3,-3-extra,196,166+extra,3))
-    for i,x in enumerate((-6,179.2)):
-        feature('rear_glass','CUT','Hinge_clearance_'+str(i),glass_bottom-.2,glass_top+.2,R(x,PARAM['stand_hinge_y_mm']-11.5,16.8,19,2))
+    cy=PARAM['stand_hinge_y_mm'];assembly_shift=PARAM['stand_glass_assembly_shift_mm']
+    keyhole=[(-6,cy-11.5),(4.2,cy-11.5),(4.2,cy+assembly_shift-5),
+             (10.8,cy+assembly_shift-5),(10.8,cy+assembly_shift+5),
+             (-6,cy+assembly_shift+5)]
+    for i in range(2):
+        points=[(190-x,y) for x,y in keyhole] if i else keyhole
+        profile,_=rounded_panel(points,1.5)
+        feature('rear_glass','CUT','Hinge_clearance_'+str(i),glass_bottom-.2,glass_top+.2,profile)
     for i,(x,y) in enumerate(case_screws):
         feature('rear_glass','CUT','M3_clearance_'+str(i),glass_bottom-.2,glass_top+.2,C(x,y,1.7))
     # Reproduce the existing main-PCB key cutout in the rear acrylic.
@@ -1005,10 +1017,21 @@ def check_shapes(export_source=False):
         bodies=TopExp_Explorer(solid,TopAbs_SOLID);body_count=0
         while bodies.More():body_count+=1;bodies.Next()
         if body_count!=1:raise ValueError(f'{name}: expected one connected solid, got {body_count}')
-        if export_source and name in ('front','rear','power_cap','kickstand'):
-            write_model(ROOT/'output'/(name+'-source.step'),[(solid,BLUE)])
+        # Compare the same neutral representation as the native CAD export.
+        # STEP normalizes trimmed spline patches at blended intersections;
+        # integrating their unnormalized construction surfaces can overcount
+        # volume even when the shell passes the topological validity check.
+        with tempfile.TemporaryDirectory() as temporary:
+            neutral=(ROOT/'output'/(name+'-source.step') if export_source and
+                     name in ('front','rear','power_cap','kickstand') else
+                     Path(temporary)/(name+'.step'))
+            write_model(neutral,[(solid,BLUE)])
+            normalized=read_solids(neutral)
+            if len(normalized)!=1 or not BRepCheck_Analyzer(normalized[0]).IsValid():
+                raise ValueError('Invalid neutral source '+name)
+            expected=normalized[0]
+            result[name]={'volume_mm3':volume(expected),'bounds_mm':[round(v,4) for v in bbox(expected)]}
         (ROOT/'src'/f'{name}.plan').write_text('\n'.join(lines)+'\n')
-        result[name]={'volume_mm3':volume(solid),'bounds_mm':[round(v,4) for v in bbox(solid)]}
     assert PARAM['panel_top_mm']-PARAM['control_panel_thickness_mm']>=13.5
     assert RELEASED_MM>PARAM['panel_top_mm']-PARAM['film_recess_mm']+.15
     (ROOT/'src/geometry-check.json').write_text(json.dumps(result,indent=2)+'\n')

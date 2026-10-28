@@ -119,6 +119,54 @@ def mesh_check(name,shape):
     print('PASS',name,': one valid solid;',n,'STL triangles, closed mesh, millimetres; volume delta %.6g mm3'%(mesh_volume-solid_volume))
 
 
+def check_stand_glass(shapes):
+    stand,glass=shapes['kickstand'],shapes['rear_glass']
+    def shift(shape,dy=0,dz=0):
+        return transform(shape,[1,0,0,0,0,1,0,dy,0,0,1,dz])
+    def intersection(a,b):
+        return volume(BRepAlgoAPI_Common(a,b).Shape())
+    # Check the loose acrylic and stand as a subassembly, before the acrylic
+    # enters the rear frame's fixed seat. Translation inside that seat is not
+    # an assembly operation and is deliberately not assumed here.
+    travel=PARAM['stand_glass_assembly_shift_mm']
+    for dz in (10,8,6,4,2,0):
+        assert intersection(stand,shift(glass,-travel,dz))<.001,('wide acrylic assembly opening',dz)
+    for i in range(19):
+        dy=-travel*(1-i/18)
+        assert intersection(stand,shift(glass,dy))<.001,('acrylic locking travel',dy)
+    for angle in (0,PARAM['stand_open_degrees']/2,PARAM['stand_open_degrees']):
+        rotated=transform(stand,stand_matrix(angle))
+        assert intersection(shift(rotated,dz=-.6),glass)>.1,('acrylic does not retain stand',angle)
+    print('PASS: loose acrylic assembly windows admit stand; %.1f mm locking travel; glass blocks rearward withdrawal at 0/half/full opening'%travel,flush=True)
+
+
+def check_stand_motion(shapes,assemblies,data):
+    for angle in sorted(set(range(0,int(data['stand_open_degrees'])+1,4))|{data['stand_open_degrees']}):
+        stand=transform(shapes['kickstand'],stand_matrix(angle));a=bbox(stand)
+        for right in ['front','rear','rear_glass','pcb_reference']:
+            for i,(q,b) in enumerate(assemblies[right]):
+                if overlap(a,b):
+                    v=volume(BRepAlgoAPI_Common(stand,q).Shape())
+                    assert v<.001,('stand rotation collision',angle,right,i,v)
+    check_stand_glass(shapes)
+    cy,cz=data['stand_hinge_yz_mm']
+    for x0,x1 in [(-5.79,-4.601),(194.601,195.79)]:
+        cover=box(x0,cy-2,cz-1.8,x1,cy+2,cz+1.8)
+        assert abs(volume(BRepAlgoAPI_Common(shapes['rear'],cover).Shape())-volume(cover))<.001,'hinge outer cover is thinner than 1.2 mm'
+    for angle in [-5,data['stand_open_degrees']+5]:
+        stand=transform(shapes['kickstand'],stand_matrix(angle))
+        assert volume(BRepAlgoAPI_Common(stand,shapes['rear']).Shape())>.01,('stand stop missing',angle)
+    assert all('M3' not in f[1] and 'nut' not in f[1].lower() for f in FEATURES['kickstand']),'stand still needs fasteners'
+    for angle in (0,data['stand_open_degrees']):
+        stand=transform(shapes['kickstand'],stand_matrix(angle))
+        for axis in range(3):
+            for sign in (-1,1):
+                shift=[0,0,0];shift[axis]=sign*.6
+                moved=transform(stand,[1,0,0,shift[0],0,1,0,shift[1],0,0,1,shift[2]])
+                assert sum(volume(BRepAlgoAPI_Common(moved,q).Shape()) for q in (shapes['front'],shapes['rear']))>.01,('stand axle can escape',angle,axis,sign)
+    print('PASS: stand clears case, acrylic and PCB through 0..%g degrees; end stops and captive axles retained'%data['stand_open_degrees'],flush=True)
+
+
 def main(geometry_only=False,source_geometry=False):
     if source_geometry:
         geometry_only=True
@@ -503,28 +551,7 @@ def main(geometry_only=False,source_geometry=False):
     assert all(.498<v<.502 for v in clearance),('USB perimeter clearance is not 0.5 mm',min(clearance),max(clearance))
     print('PASS: USB front-shell perimeter clearance %.4f..%.4f mm; outer pocket retained'%(min(clearance),max(clearance)))
     print('PASS: USB axial lip 0.5 mm from receptacle face; 12x6 mm plug body starts 2.2 mm behind that face')
-    for angle in sorted(set(range(0,int(data['stand_open_degrees'])+1,4))|{data['stand_open_degrees']}):
-        stand=transform(shapes['kickstand'],stand_matrix(angle));a=bbox(stand)
-        for right in ['front','rear','rear_glass','pcb_reference']:
-            for i,(q,b) in enumerate(assemblies[right]):
-                if overlap(a,b):
-                    v=volume(BRepAlgoAPI_Common(stand,q).Shape())
-                    assert v<.001,('stand rotation collision',angle,right,i,v)
-    cy,cz=data['stand_hinge_yz_mm']
-    for x0,x1 in [(-5.79,-4.601),(194.601,195.79)]:
-        cover=box(x0,cy-2,cz-1.8,x1,cy+2,cz+1.8)
-        assert abs(volume(BRepAlgoAPI_Common(shapes['rear'],cover).Shape())-volume(cover))<.001,'hinge outer cover is thinner than 1.2 mm'
-    for angle in [-5,data['stand_open_degrees']+5]:
-        stand=transform(shapes['kickstand'],stand_matrix(angle))
-        assert volume(BRepAlgoAPI_Common(stand,shapes['rear']).Shape())>.01,('stand stop missing',angle)
-    assert all('M3' not in f[1] and 'nut' not in f[1].lower() for f in FEATURES['kickstand']),'stand still needs fasteners'
-    for angle in (0,data['stand_open_degrees']):
-        stand=transform(shapes['kickstand'],stand_matrix(angle))
-        for axis in range(3):
-            for sign in (-1,1):
-                shift=[0,0,0];shift[axis]=sign*.6
-                moved=transform(stand,[1,0,0,shift[0],0,1,0,shift[1],0,0,1,shift[2]])
-                assert sum(volume(BRepAlgoAPI_Common(moved,q).Shape()) for q in (shapes['front'],shapes['rear']))>.01,('stand axle can escape',angle,axis,sign)
+    check_stand_motion(shapes,assemblies,data)
     print('PASS: recessed power head; USB funnel admits reference 12x6 mm plug; stand folds 0..%g degrees with end stops'%data['stand_open_degrees'])
     assert (ROOT/'oscill_case.SLDASM').is_file()
     print('Physical fit and printing are not measured by this check.')
