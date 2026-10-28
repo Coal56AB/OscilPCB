@@ -791,6 +791,8 @@ def layout_and_plans(board):
     flange_width=8.4+1.5+2*end_clearance
     flange_end=192.6-data['power_cap_origin_mm'][0]-axial
     thumb_start=193.8-data['power_cap_origin_mm'][0]+axial
+    power_recess=R(88.92,-5.85,10.7,7.2,1.4)
+    power_mouth=R(88.12,-6.65,12.3,8.8,2.2)
     for part in ['rear','front']:
         feature(part,'ADD','Power_slider_guide',-6 if part=='rear' else -2,
                 -2 if part=='rear' else 1.5,R(190.8,87.5,3,13.5))
@@ -806,9 +808,7 @@ def layout_and_plans(board):
         entry=R(94.27-slot_width/2-.25,-2.25-1.5-slide-.25,slot_width+.5,3+2*slide+.5)
         feature(part,'CUT_X_LOFT','Slider_inner_entry',192.59,192.85,entry,guide)
         feature(part,'CUT_X_LOFT','Slider_outer_entry',193.55,193.81,guide,entry)
-        feature(part,'CUT_X','Power_thumb_recess',193.8,197.2,R(88.92,-5.85,10.7,7.2,1.4))
-        feature(part,'CUT_X_LOFT','Power_recess_bevel',195,195.8,
-                R(88.92,-5.85,10.7,7.2,1.4),R(88.12,-6.65,12.3,8.8,2.2))
+        feature(part,'CUT_X','Power_thumb_recess',193.8,197.2,power_recess)
     feature('power_cap','ADD','Slider_stem',0,4.2,R(-1.9,-1.5,3.8,3.0,.4))
     feature('power_cap','ADD','Captive_flange',1.2,flange_end,R(-4.2,-2.7,8.4,5.4,.5))
     feature('power_cap','ADD','Thumb_pad',thumb_start,5,R(-4.2,-3.2,8.4,6.4,1))
@@ -877,6 +877,19 @@ def layout_and_plans(board):
     feature('kickstand','FILLET','Stand_front_edge_round',.5,rear_outer-.4,'stand_front_edges')
     feature('power_cap','FILLET','Thumb_pad_edge_round',.25,5,'thumb_pad_edges')
     feature('power_cap','FILLET','Thumb_rib_crown_round',.15,5.4,'thumb_crowns')
+    # Interrupt the locating joint at the power opening. Restore only the
+    # front's missing wall and remove the matching rear tongue, then finish
+    # the opening with one continuous bevel through the full recess depth.
+    mouth=list(map(float,power_mouth.split(',')[1:]))
+    joint=R(193.65,mouth[0]-.5,1.5,mouth[2]+1)
+    feature('front','ADD','Power_joint_fill',-2,-.2,joint)
+    feature('rear','CUT','Power_joint_tongue_relief',-2,-.4,joint)
+    for title,suffix in [('Slider_slot','slot'),('Slider_outer_entry','entry'),('Power_thumb_recess','recess')]:
+        original=next(f for f in FEATURES['front'] if f[1]==title)
+        feature('front',original[0],'Power_joint_'+suffix,original[2],original[3],*original[4])
+    recess=next(f for f in FEATURES['front'] if f[1]=='Power_thumb_recess')
+    for part in ('front','rear'):
+        feature(part,'CUT_X_LOFT','Power_joint_bevel',recess[2],195.8,power_recess,power_mouth)
     return data
 
 

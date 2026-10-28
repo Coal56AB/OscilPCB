@@ -77,6 +77,21 @@ def check_screen_bevel(shape,data):
     print('PASS: R%.1f screen nose meets the flat underside at 90 degrees, follows the active area and leaves the image clear'%radius,flush=True)
 
 
+def check_power_joint(shapes):
+    restored=box(193.72,87.70,-1.8,195.05,88.0,-.4)
+    assert abs(volume(BRepAlgoAPI_Common(shapes['front'],restored).Shape())-volume(restored))<.001,'locating groove remains beside the power opening'
+    assert volume(BRepAlgoAPI_Common(shapes['rear'],restored).Shape())<.001,'rear locating tongue enters the filled front joint'
+    maximum=0
+    for x in (194.2,194.8,195.4):
+        expansion=.4*(x-193.8)
+        for y in (88.92-expansion,99.62+expansion):
+            for name,z in [('front',-1.95),('rear',-2.05)]:
+                point=BRepBuilderAPI_MakeVertex(gp_Pnt(x,y,z)).Vertex()
+                maximum=max(maximum,BRepExtrema_DistShapeShape(point,shapes[name]).Value())
+    assert maximum<.002,('power bevels do not continue across the joint',maximum)
+    print('PASS: no locating groove beside the power opening; both halves share the continuous bevel, max border error %.6g mm'%maximum,flush=True)
+
+
 def mesh_check(name,shape):
     path=ROOT/'output'/f'{name}.stl'
     raw=path.read_bytes();n=struct.unpack_from('<I',raw,80)[0]
@@ -144,6 +159,7 @@ def main(geometry_only=False,source_geometry=False):
         shapes[name]=s
         assert (ROOT/f'{name}.SLDPRT').is_file()
     check_screen_bevel(shapes['front'],data)
+    check_power_joint(shapes)
     led_x,led_y=data['controls']['LED_RUN']
     assert led_x==data['controls']['RUN_STOP'][0],'RUN opening is not centred above RUN/STOP'
     led_opening=cylinder(led_x,led_y,panel_bottom-.1,panel_top+.1,1.79)
