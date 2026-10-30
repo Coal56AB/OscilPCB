@@ -21,9 +21,10 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
-from OCP.BRepAdaptor import BRepAdaptor_Curve
+from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCP.GeomAbs import GeomAbs_Cylinder
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_SOLID
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_SOLID, TopAbs_FACE
 from OCP.TopoDS import TopoDS
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.BRepBndLib import BRepBndLib
@@ -345,10 +346,11 @@ def screen_bevel_angle(run,height,radius):
 
 
 def rounded_screen_tool(data):
-    """Round the nose above the glass datum; the later trim removes its lower half."""
+    """Full circular nose, tangent to the underside and the upper bevel."""
     x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
-    bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
-    top=bottom+PARAM['panel_thickness_mm'];r=PARAM['screen_edge_radius_mm']
+    bezel_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
+    bottom=bezel_bottom+PARAM['screen_edge_radius_mm']
+    top=bezel_bottom+PARAM['panel_thickness_mm'];r=PARAM['screen_edge_radius_mm']
     def side(gap):
         angle=screen_bevel_angle(gap,top-bottom+r,r)
         lower=(gap-r,bottom-r);upper=(-r*math.tan(angle/2),top)
@@ -439,8 +441,21 @@ def display_layout(board):
            bbox(s)[3]-bbox(s)[0]>160 and abs(bbox(s)[5]-8.88)<.01]
     active=[bbox(transform(s,matrix)) for s in solids if
             150<bbox(s)[3]-bbox(s)[0]<160 and abs(bbox(s)[5]-8.88)<.01]
+    pcbs=[transform(s,matrix) for s in solids if
+          bbox(s)[3]-bbox(s)[0]>160 and abs(bbox(s)[5]-bbox(s)[2]-1.6)<.001]
+    if len(pcbs)!=1:raise ValueError('Cannot identify LCD PCB for wall clearance')
+    pcb=pcbs[0];q=bbox(pcb);reliefs=[]
+    faces=TopExp_Explorer(pcb,TopAbs_FACE)
+    while faces.More():
+        surface=BRepAdaptor_Surface(TopoDS.Face(faces.Current()))
+        if surface.GetType()==GeomAbs_Cylinder:
+            circle=surface.Cylinder();p=circle.Location();r=circle.Radius()
+            if abs(abs(circle.Axis().Direction().Z())-1)<1e-6 and abs(p.Y()-r-q[1])<.001:
+                reliefs.append([p.X(),p.Y(),r+.5,q[2]-.5,q[5]+.5])
+        faces.Next()
+    if len(reliefs)!=2:raise ValueError('Expected two round lower LCD PCB ears')
     return dict(model=body.model_name,origin_mm=[matrix[3],matrix[7],matrix[11]],
-                mounts_mm=mounts,mount_error_mm=max(errors),glass_mm=glass[0],active_mm=active[0])
+                mounts_mm=mounts,mount_error_mm=max(errors),glass_mm=glass[0],active_mm=active[0],wall_reliefs_mm=reliefs)
 
 
 def update_controls():
@@ -591,9 +606,12 @@ def layout_and_plans(board):
     bezel_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
     bezel_top=bezel_bottom+PARAM['panel_thickness_mm']
     radius=PARAM['screen_edge_radius_mm']
+    assert abs(2*radius-PARAM['screen_edge_thickness_mm'])<1e-9
+    screen_nose=bezel_bottom+radius
     def rounded_run(run):
-        angle=screen_bevel_angle(run,PARAM['panel_thickness_mm']+radius,radius)
-        return (PARAM['panel_thickness_mm']+radius)/math.tan(angle)
+        height=bezel_top-screen_nose+radius
+        angle=screen_bevel_angle(run,height,radius)
+        return height/math.tan(angle)
     ex,ey,ew,eh=screen_outer
     ix=ex+rounded_run(screen_x-ex);iy=ey+rounded_run(screen_y-ey)
     ir=ex+ew-rounded_run(ex+ew-screen_x-screen_width)
@@ -663,24 +681,21 @@ def layout_and_plans(board):
             P([(55.4,34.2),(171.8,34.2),(161.8,37.3),(65.4,37.3)]))
     for i in range(5):
         a,b=wall_front[i:i+2]
+        width=PARAM['encoder_wall_mm']*math.hypot(b[0]-a[0],b[1]-a[1])/(b[0]-a[0])
         feature('front','ADD','Continuous_encoder_wall_'+str(i),panel_top-.1,bezel_top,
-                P([a,b,(b[0],b[1]+2),(a[0],a[1]+2)]))
+                P([a,b,(b[0],b[1]+width),(a[0],a[1]+width)]))
     # Blend the uninterrupted outside rim before cutting the thin film pocket.
     feature('front','FILLET','Outer_control_panel_round',PARAM['control_panel_edge_radius_mm'],panel_top,'deck')
     # The actual PCB edge between its ears is Y=45.09, beyond this wall.
     # A rectangular bounding-box cut would create an unnecessary visible slot.
     sx,sy,sw,sh=screen_inner
     ex,ey,ew,eh=screen_outer
-    stock=P([(ex-1,ey-1),(ex+ew+1,ey-1),(ex+ew+1,ey+eh+1),(ex-1,ey+eh+1)])
-    # Form the complete native fillet on temporary stock, then remove the part
-    # below the glass datum. The remaining arc has a vertical tangent there,
-    # meeting the horizontal underside at 90 degrees rather than tapering to zero.
-    feature('front','ADD','Screen_round_stock',bezel_bottom-radius,bezel_bottom+.01,stock)
-    feature('front','CUT_Z_LOFT','Screen_edge_bevel',bezel_bottom-radius,bezel_top,
+    # A full R0.75 nose replaces the whole 1.5 mm edge. Its lower arc joins
+    # the underside directly; no vertical strip or later stock restoration.
+    feature('front','CUT_Z_LOFT','Screen_edge_bevel',bezel_bottom,bezel_top,
             P([(sx,sy),(sx+sw,sy),(sx+sw,sy+sh),(sx,sy+sh)]),
             P([(ex,ey),(ex+ew,ey),(ex+ew,ey+eh),(ex,ey+eh)]))
     feature('front','FILLET','Bezel_free_edge_round',PARAM['screen_edge_radius_mm'],0,'window_edges')
-    feature('front','CUT','Screen_round_stock_trim',bezel_bottom-radius-.1,bezel_bottom,stock)
     # Local underside ribs occupy the empty lanes between controls. The panel
     # itself remains 13.5 mm above the PCB; ribs project lower only here.
     rib_width=PARAM['control_rib_width_mm'];rib_bottom=PARAM['control_rib_bottom_mm']
@@ -783,7 +798,7 @@ def layout_and_plans(board):
     feature('front','ADD_X','USB_C_inner_collar',191,193.2,
             R(usb_y-7.47,usb_z-4.58,14.94,9.16,3.2))
     feature('front','CUT_X','USB_C_throat',190.9,usb_funnel_start+.1,usb_throat)
-    feature('front','CUT_X_LOFT','USB_C_funnel',usb_funnel_start,195.8,
+    feature('front','CUT_X_LOFT','USB_C_funnel',usb_funnel_start,ox+ow,
             usb_throat,R(usb_y-8.4,usb_z-usb_h/2,16.8,usb_h,usb_r))
     for i,y in enumerate(range(78,109,5)):
         feature('front','CUT_X','Air_intake_'+str(i),192.8,196.2,chamfer_rect(y-1.2,5,2.4,17,.8))
@@ -823,15 +838,19 @@ def layout_and_plans(board):
         feature(part,'CUT_X','Power_thumb_recess',193.8,197.2,power_recess)
     feature('power_cap','ADD','Slider_stem',0,4.2,R(-1.9,-1.5,3.8,3.0,.4))
     feature('power_cap','ADD','Captive_flange',1.2,flange_end,R(-4.2,-2.7,8.4,5.4,.5))
-    feature('power_cap','ADD','Thumb_pad',thumb_start,5,R(-4.2,-3.2,8.4,6.4,1))
+    thumb_top=ox+ow+PARAM['power_cap_protrusion_mm']-data['power_cap_origin_mm'][0]
+    chamfer=PARAM['power_cap_chamfer_mm']
+    feature('power_cap','ADD','Thumb_pad',thumb_start,thumb_top-chamfer,R(-4.2,-3.2,8.4,6.4,1))
+    feature('power_cap','ADD_Z_LOFT','Thumb_pad_chamfer',thumb_top-chamfer,thumb_top,
+            R(-4.2,-3.2,8.4,6.4,1),R(-4.2+chamfer,-3.2+chamfer,8.4-2*chamfer,6.4-2*chamfer,1-chamfer))
     sw,sh=PARAM['switch_socket_width_mm'],PARAM['switch_socket_height_mm']
     feature('power_cap','CUT','Switch_pin_socket',-.1,2.3,R(-sw/2,-sh/2,sw,sh,.1))
     # Open the first 0.6 mm of the socket roof to clear the main PCB edge.
     feature('power_cap','CUT','PCB_edge_relief',-.1,.6,R(-2,.55,4,1.05))
     feature('power_cap','FILLET','Stem_shoulder_round',.2,0,'stem')
     for i,x in enumerate([-2.4,0,2.4]):
-        feature('power_cap','ADD','Thumb_rib_'+str(i),4.9,5.4,R(x-.4,-2,.8,4,.3))
-    feature('power_cap','FILLET','Thumb_rib_root_round',.2,5,'thumb_ribs')
+        feature('power_cap','ADD','Thumb_rib_'+str(i),thumb_top-.1,thumb_top+.4,R(x-.4,-2,.8,4,.3))
+    feature('power_cap','FILLET','Thumb_rib_root_round',.2,thumb_top,'thumb_ribs')
     build_stand()
     feature('front','FILLET','Wall_transition_round',5,0,'wall')
     feature('front','FILLET','Outer_front_round',5,bezel_top,'outer')
@@ -887,8 +906,7 @@ def layout_and_plans(board):
     feature('kickstand','FILLET','Pivot_neck_root_round',1,rear_outer-.4,'stand_necks')
     feature('kickstand','FILLET','Stand_contact_round',2,rear_outer-.4-5.6,'all')
     feature('kickstand','FILLET','Stand_front_edge_round',.5,rear_outer-.4,'stand_front_edges')
-    feature('power_cap','FILLET','Thumb_pad_edge_round',.25,5,'thumb_pad_edges')
-    feature('power_cap','FILLET','Thumb_rib_crown_round',.15,5.4,'thumb_crowns')
+    feature('power_cap','FILLET','Thumb_rib_crown_round',.15,thumb_top+.4,'thumb_crowns')
     # Interrupt the locating joint at the power opening. Restore only the
     # front's missing wall and remove the matching rear tongue, then finish
     # the opening with one continuous bevel through the full recess depth.
@@ -901,7 +919,17 @@ def layout_and_plans(board):
         feature('front',original[0],'Power_joint_'+suffix,original[2],original[3],*original[4])
     recess=next(f for f in FEATURES['front'] if f[1]=='Power_thumb_recess')
     for part in ('front','rear'):
-        feature(part,'CUT_X_LOFT','Power_joint_bevel',recess[2],195.8,power_recess,power_mouth)
+        feature(part,'CUT_X_LOFT','Power_joint_bevel',recess[2],ox+ow,power_recess,power_mouth)
+    # Only the backs of the 3 mm end walls approach these two PCB ears.
+    # Follow their actual circular outline; leave the control deck and the
+    # uninterrupted outside wall intact instead of cutting a rectangular slot.
+    for i,(x,y,r,lo,hi) in enumerate(display['wall_reliefs_mm']):
+        feature('front','CUT','LCD_PCB_edge_relief_'+str(i),lo,hi,C(x,y,r))
+    # Square lower corner at the glass; retain only the upper nose arc.
+    feature('front','ADD','Screen_lower_corner_fill',bezel_bottom,screen_nose,
+            P([(ex-1,ey-1),(ex+ew+1,ey-1),(ex+ew+1,ey+eh+1),(ex-1,ey+eh+1)]),
+            P([(screen_x,screen_y),(screen_x+screen_width,screen_y),
+               (screen_x+screen_width,screen_y+screen_height),(screen_x,screen_y+screen_height)]))
     return data
 
 
@@ -947,8 +975,9 @@ def check_shapes(export_source=False):
                         edge_x=PARAM['pcb_edge_clearance_mm']+PARAM['wall_mm']
                         selected=q[3]-q[0]<1e-5 and q[4]-q[1]<1e-5 and q[5]-q[2]>3 and abs(q[1]-34.2)<1e-5 and any(abs(q[0]-x)<1e-5 for x in (-edge_x,190+edge_x))
                     elif loops[0]=='window_edges':
-                        window_bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']-PARAM['screen_edge_radius_mm']
-                        window_top=window_bottom+PARAM['panel_thickness_mm']+PARAM['screen_edge_radius_mm']
+                        window_base=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
+                        window_bottom=window_base
+                        window_top=window_base+PARAM['panel_thickness_mm']
                         upper=abs(q[2]-window_top)<1e-5 and abs(q[5]-window_top)<1e-5
                         sx,sy,sw,sh=data['screen_bevel_inner_window']
                         at_side=(q[3]-q[0]<1e-5 and any(abs(q[0]-x)<1e-5 for x in (sx,sx+sw))) or (q[4]-q[1]<1e-5 and any(abs(q[1]-y)<1e-5 for y in (sy,sy+sh)))
@@ -1022,8 +1051,7 @@ def check_shapes(export_source=False):
         # integrating their unnormalized construction surfaces can overcount
         # volume even when the shell passes the topological validity check.
         with tempfile.TemporaryDirectory() as temporary:
-            neutral=(ROOT/'output'/(name+'-source.step') if export_source and
-                     name in ('front','rear','power_cap','kickstand') else
+            neutral=(ROOT/'output'/(name+'-source.step') if export_source else
                      Path(temporary)/(name+'.step'))
             write_model(neutral,[(solid,BLUE)])
             normalized=read_solids(neutral)

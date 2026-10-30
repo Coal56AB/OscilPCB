@@ -50,31 +50,38 @@ def check_power_guide(shapes,data):
 def check_screen_bevel(shape,data):
     x,y,w,h,_=data['screen_window'];ex,ey,ew,eh=data['screen_outer_window']
     bottom=PARAM['display_measured_top_mm']+PARAM['display_front_clearance_mm']
+    nose_z=bottom+PARAM['screen_edge_radius_mm']
     radius=PARAM['screen_edge_radius_mm']
-    faces=[];rounds=[];explorer=TopExp_Explorer(shape,TopAbs_FACE)
+    faces=[];rounds=[];vertical=[];explorer=TopExp_Explorer(shape,TopAbs_FACE)
     while explorer.More():
         face=TopoDS.Face(explorer.Current());surface=BRepAdaptor_Surface(face);q=bbox(face)
         if ex-radius-.01<q[0] and q[3]<ex+ew+radius+.01 and ey-radius-.01<q[1] and q[4]<ey+eh+radius+.01 and q[2]>bottom-.01:
             if surface.GetType()==GeomAbs_Plane:
                 normal=surface.Plane().Axis().Direction()
-                if .1<abs(normal.Z())<.99:faces.append(face)
+                if .1<abs(normal.Z())<.99999:faces.append(face)
+                if abs(normal.Z())<1e-6:vertical.append(face)
             elif surface.GetType()==GeomAbs_Cylinder and abs(surface.Cylinder().Radius()-radius)<1e-5:
                 rounds.append(face)
         explorer.Next()
     assert len(faces)==4,('screen must have four planar bevel faces',len(faces))
     assert rounds,'screen edge rounds are missing'
-    nose=[face for face in rounds if abs(bbox(face)[2]-bottom)<.002]
-    outside=[face for face in rounds if bbox(face)[2]>bottom+.01]
+    assert vertical,'square lower edge at the glass is missing'
+    assert abs(2*radius-PARAM['screen_edge_thickness_mm'])<1e-9
+    # Parasolid may split the same cylindrical nose at its parameter seam.
+    # Group the lower and upper patches by their shared cylinder centre.
+    nose=[face for face in rounds if abs(BRepAdaptor_Surface(face).Cylinder().Location().Z()-nose_z)<.002]
+    outside=[face for face in rounds if abs(BRepAdaptor_Surface(face).Cylinder().Location().Z()-(bottom+PARAM['panel_thickness_mm']-radius))<.002]
     assert nose and outside,'both the rounded nose and outside rim must remain'
-    assert all(abs(BRepAdaptor_Surface(face).Cylinder().Location().Z()-bottom)<.002 for face in nose),'nose must meet the flat underside at 90 degrees'
+    assert any(abs(bbox(face)[2]-nose_z)<.002 for face in nose),'nose does not reach the lower bezel surface'
     for t in (.25,.5,.75):
-        for px,py in ((x,y+t*h),(x+w,y+t*h),(x+t*w,y),(x+t*w,y+h)):
-            point=BRepBuilderAPI_MakeVertex(gp_Pnt(px,py,bottom)).Vertex()
-            distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in nose)
-            assert distance<.002,('screen nose misses active-area border',px,py,distance)
+        for px,py,nx,ny in ((x,y+t*h,-1,0),(x+w,y+t*h,1,0),(x+t*w,y,0,-1),(x+t*w,y+h,0,1)):
+            for angle in (0,math.pi/3):
+                point=BRepBuilderAPI_MakeVertex(gp_Pnt(px+nx*radius*(1-math.cos(angle)),py+ny*radius*(1-math.cos(angle)),nose_z+radius*math.sin(angle))).Vertex()
+                distance=min(BRepExtrema_DistShapeShape(point,face).Value() for face in nose)
+                assert distance<.002,('full screen round misses its circular profile',px,py,angle,distance)
     aperture=box(x+.01,y+.01,bottom-.01,x+w-.01,y+h-.01,bottom+PARAM['panel_thickness_mm']+.01)
     assert volume(BRepAlgoAPI_Common(shape,aperture).Shape())<.001,'screen lip obscures active area'
-    print('PASS: R%.1f screen nose meets the flat underside at 90 degrees, follows the active area and leaves the image clear'%radius,flush=True)
+    print('PASS: upper R%.2f screen nose and square lower corner; nominal edge %.2f mm; active area clear'%(radius,2*radius),flush=True)
 
 
 def check_power_joint(shapes):
@@ -82,8 +89,9 @@ def check_power_joint(shapes):
     assert abs(volume(BRepAlgoAPI_Common(shapes['front'],restored).Shape())-volume(restored))<.001,'locating groove remains beside the power opening'
     assert volume(BRepAlgoAPI_Common(shapes['rear'],restored).Shape())<.001,'rear locating tongue enters the filled front joint'
     maximum=0
-    for x in (194.2,194.8,195.4):
-        expansion=.4*(x-193.8)
+    outer=190+PARAM['pcb_edge_clearance_mm']+PARAM['wall_mm']
+    for x in (194.2,194.8,195.4,outer-.1):
+        expansion=.8*(x-193.8)/(outer-193.8)
         for y in (88.92-expansion,99.62+expansion):
             for name,z in [('front',-1.95),('rear',-2.05)]:
                 point=BRepBuilderAPI_MakeVertex(gp_Pnt(x,y,z)).Vertex()
@@ -174,6 +182,7 @@ def main(geometry_only=False,source_geometry=False):
     data=json.loads((ROOT/'src/layout.json').read_text())
     panel_top=PARAM['panel_top_mm'];panel_bottom=data['panel_inner_z_mm']
     film_bottom,film_top=data['film_z_mm']
+    assert abs(film_bottom-panel_bottom-1.5)<1e-6,'actual panel thickness below the sticker recess must be 1.5 mm'
     assert panel_bottom>=13.5,'inner control panel must clear PCB top by at least 13.5 mm'
     assert data['pcb_sha256']==sha256((PCB/'AnalExtend/AnalExtend.PcbDoc').read_bytes()).hexdigest(),'PCB changed: rebuild reference geometry first'
     layout_and_plans(AltiumPcbDoc.from_file(PCB/'AnalExtend/AnalExtend.PcbDoc'))
@@ -188,7 +197,7 @@ def main(geometry_only=False,source_geometry=False):
     expected=json.loads((ROOT/'src/geometry-check.json').read_text())
     shapes={}
     for name in ['front','rear','power_cap','kickstand','rear_glass','panel_overlay']:
-        suffix='-source' if source_geometry and name in ('front','rear','power_cap','kickstand') else ''
+        suffix='-source' if source_geometry else ''
         solids=read_solids(ROOT/'output'/f'{name}{suffix}.step')
         assert len(solids)==1,(name,'solid count',len(solids))
         s=solids[0];assert BRepCheck_Analyzer(s).IsValid(),name
@@ -206,6 +215,15 @@ def main(geometry_only=False,source_geometry=False):
         if not geometry_only and name in ['front','rear','power_cap','kickstand']:mesh_check(name,s)
         shapes[name]=s
         assert (ROOT/f'{name}.SLDPRT').is_file()
+    for name,z in [('front',5),('rear',-4)]:
+        for probe in (box(-5.999,45,z,-3.001,46,z+1),box(193.001,45,z,195.999,46,z+1)):
+            assert abs(volume(BRepAlgoAPI_Common(shapes[name],probe).Shape())-volume(probe))<.001,('main wall is thinner than 3 mm',name)
+    for probe in (box(0,80,28.501,1,81,31.499),box(100,37.301,20,101,40.299,21)):
+        assert abs(volume(BRepAlgoAPI_Common(shapes['front'],probe).Shape())-volume(probe))<.001,'front bezel or encoder wall is thinner than 3 mm'
+    print('PASS: 3 mm main walls, display bezel and encoder wall; 1.5 mm panel under sticker recess',flush=True)
+    for x,y,r,lo,hi in data['lcd']['wall_reliefs_mm']:
+        probe=cylinder(x,y,lo+.001,hi-.001,r-.001)
+        assert volume(BRepAlgoAPI_Common(shapes['front'],probe).Shape())<.001,'round LCD PCB ear clearance is blocked'
     check_screen_bevel(shapes['front'],data)
     check_power_joint(shapes)
     led_x,led_y=data['controls']['LED_RUN']
@@ -249,7 +267,11 @@ def main(geometry_only=False,source_geometry=False):
     access=data['top_access_mm'];port_space=box(*access)
     for s in (shapes['front'],shapes['rear']):
         assert volume(BRepAlgoAPI_Common(s,port_space).Shape())<.001,'top access is blocked by the locating tongue'
-    assert data['case_bounds'][3]-190.975<5
+    border=PARAM['pcb_edge_clearance_mm']+PARAM['wall_mm']
+    assert abs(data['case_bounds'][0]+border)<1e-6 and abs(data['case_bounds'][3]-190-border)<1e-6,'wall thickening moved the PCB clearance datum'
+    kind,title,lo,hi,loops=next(f for f in FEATURES['front'] if f[1]=='USB_C_funnel')
+    assert abs(hi-data['case_bounds'][3])<1e-6,'USB-C pocket does not reach the outside wall'
+    assert volume(BRepAlgoAPI_Common(shapes['front'],feature_tool(kind,loops,lo,hi)).Shape())<.001,'USB-C plug pocket is obstructed'
     sx,sy,sw,sh,_=data['screen_window'];xmin,_,_,xmax,_,_=data['case_bounds']
     ex,ey,ew,eh=data['screen_outer_window']
     assert abs((ex-xmin)-(xmax-ex-ew))<1e-6,'unequal display bezel sides'
@@ -302,7 +324,12 @@ def main(geometry_only=False,source_geometry=False):
     positions=[(dy,dx) for dy in [0,-.375,-.75,-1.125,-1.5] for dx in [-axial_free,0,axial_free]]
     cx,cy,cz=data['power_cap_origin_mm']
     caps=[transform(shapes['power_cap'],[0,0,1,cx+dx,1,0,0,cy+dy,0,1,0,cz]) for dy,dx in positions]
-    assert all(bbox(c)[3]<data['case_bounds'][3]-.19 for c in caps),'power head protrudes'
+    protrusion=PARAM['power_cap_protrusion_mm']+.4
+    for cap,(_,dx) in zip(caps,positions):
+        assert abs(bbox(cap)[3]-data['case_bounds'][3]-protrusion-dx)<.001,'power head does not protrude by the specified amount'
+    chamfer=next(f for f in FEATURES['power_cap'] if f[1]=='Thumb_pad_chamfer')
+    assert abs(chamfer[3]-chamfer[2]-.5)<1e-6,'power cap perimeter chamfer missing'
+    print('PASS: power cap head %.1f mm above the case, ribs %.1f mm, perimeter chamfer 0.5 mm'%(PARAM['power_cap_protrusion_mm'],protrusion),flush=True)
     assert len([f for f in FEATURES['power_cap'] if f[1].startswith('Thumb_rib_') and f[0]=='ADD'])==3,'raised power ribs missing'
     assemblies={name:[(s,bbox(s))] for name,s in shapes.items() if name!='power_cap'}
     for name in ['pcb_reference','charger_reference','encoder_caps_reference']:
@@ -311,6 +338,8 @@ def main(geometry_only=False,source_geometry=False):
     bnc_x,bnc_y=data['controls']['BNC_Channel 0']
     ligament=math.hypot(bnc_x-5,bnc_y-5)-PARAM['bnc_opening_mm']/2-PARAM['m3_insert_outer_diameter_mm']/2
     assert ligament>1.1,'insufficient ligament between insert and BNC plug bore'
+    bore_web=math.hypot(bnc_x-5,bnc_y-5)-PARAM['bnc_opening_mm']/2-PARAM['m3_insert_hole_mm']/2
+    assert bore_web>.99,'enlarged glue bore leaves less than 0.99 mm of material beside BNC'
     assert PARAM['m3_insert_hole_mm']>PARAM['m3_insert_outer_diameter_mm'],'glued insert needs clearance'
     assert PARAM['m3_insert_depth_mm']>=PARAM['m3_insert_length_mm']+.5,'insert seat needs bottom clearance'
     print('PASS: four glued-in M3x5 insert seats, diameter %.1f x %.1f mm; minimum local BNC ligament to insert %.3f mm'%(PARAM['m3_insert_hole_mm'],PARAM['m3_insert_depth_mm'],ligament))
@@ -344,6 +373,8 @@ def main(geometry_only=False,source_geometry=False):
     assert abs(volume(BRepAlgoAPI_Common(shapes['front'],deck).Shape())-volume(deck))<.001,'control panel thickness is incomplete'
     below=box(96,20,panel_bottom-.1,97,21,panel_bottom-.001)
     assert volume(BRepAlgoAPI_Common(shapes['front'],below).Shape())<.001,'control panel inner face is below 13.5 mm'
+    above=box(96,20,film_bottom+.001,97,21,film_bottom+.1)
+    assert volume(BRepAlgoAPI_Common(shapes['front'],above).Shape())<.001,'sticker recess does not leave the specified actual panel thickness'
     print('PASS: native control panel inner face %.1f mm above PCB; full button stroke clear; cap shaft engagement %.1f mm'%(panel_bottom,21-data['encoder_cap_bottom_mm']))
     ribs=[f for f in FEATURES['front'] if f[0].startswith('ADD') and f[1].startswith('Control_rib_')]
     assert len(ribs)==6,'five panel ribs and their crossbar are required'
@@ -521,7 +552,7 @@ def main(geometry_only=False,source_geometry=False):
             stop=sum(volume(BRepAlgoAPI_Common(cap,s).Shape()) for s in (shapes['front'],shapes['rear']))
             assert stop>.1,('cap can escape without hitting the retaining flange or outer head',dy,dx,stop)
     check_power_guide(shapes,data)
-    print('PASS: flange/head block outward/inward cap escape; switch wall 4.825 mm from pin')
+    print('PASS: flange/head block outward/inward cap escape; switch wall %.3f mm from pin'%(data['case_bounds'][3]-190.975))
     # A recessed receptacle admits the metal tongue first; the larger plug
     # overmould starts 2.2 mm behind the connector face (conditional envelope).
     usb_y,usb_z=usb_c_centre()
